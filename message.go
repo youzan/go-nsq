@@ -15,6 +15,15 @@ const MsgIDLength = 16
 // MessageID is the ASCII encoded hexadecimal message ID
 type MessageID [MsgIDLength]byte
 
+type NewMessageID uint64
+
+func GetCompatibleMsgIDFromNew(id NewMessageID, traceID uint64) MessageID {
+	var buf MessageID
+	binary.BigEndian.PutUint64(buf[:8], uint64(id))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(traceID))
+	return buf
+}
+
 // Message is the fundamental data type containing
 // the id, body, and metadata
 type Message struct {

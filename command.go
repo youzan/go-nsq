@@ -104,8 +104,9 @@ func Auth(secret string) (*Command, error) {
 }
 
 // Register creates a new Command to add a topic/channel for the connected nsqd
-func Register(topic string, channel string) *Command {
+func Register(topic string, partition string, channel string) *Command {
 	params := [][]byte{[]byte(topic)}
+	params = append(params, []byte(partition))
 	if len(channel) > 0 {
 		params = append(params, []byte(channel))
 	}
@@ -113,8 +114,9 @@ func Register(topic string, channel string) *Command {
 }
 
 // UnRegister creates a new Command to remove a topic/channel for the connected nsqd
-func UnRegister(topic string, channel string) *Command {
+func UnRegister(topic string, partition string, channel string) *Command {
 	params := [][]byte{[]byte(topic)}
+	params = append(params, []byte(partition))
 	if len(channel) > 0 {
 		params = append(params, []byte(channel))
 	}

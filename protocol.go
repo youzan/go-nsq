@@ -81,7 +81,7 @@ func UnpackResponse(response []byte) (int32, []byte, error) {
 		return -1, nil, errors.New("length of response is too small")
 	}
 
-	return int32(binary.BigEndian.Uint32(response)), response[4:], nil
+	return int32(binary.BigEndian.Uint32(response[:4])), response[4:], nil
 }
 
 // ReadUnpackedResponse reads and parses data from the underlying
