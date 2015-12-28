@@ -55,6 +55,18 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 	return nil
 }
 
+func EnsureTopic(t *testing.T, port int, topic string) {
+	httpclient := &http.Client{}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/topic/create?topic=%s", port, topic)
+	req, err := http.NewRequest("POST", endpoint, nil)
+	resp, err := httpclient.Do(req)
+	if err != nil {
+		t.Fatalf(err.Error())
+		return
+	}
+	resp.Body.Close()
+}
+
 func SendMessage(t *testing.T, port int, topic string, method string, body []byte) {
 	httpclient := &http.Client{}
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/%s?topic=%s", port, method, topic)
@@ -173,9 +185,10 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	}
 	q.AddHandler(h)
 
-	SendMessage(t, 4151, topicName, "put", []byte(`{"msg":"single"}`))
-	SendMessage(t, 4151, topicName, "mput", []byte("{\"msg\":\"double\"}\n{\"msg\":\"double\"}"))
-	SendMessage(t, 4151, topicName, "put", []byte("TOBEFAILED"))
+	EnsureTopic(t, 4151, topicName)
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendMessage(t, 4151, topicName, "mpub", []byte("{\"msg\":\"double\"}\n{\"msg\":\"double\"}"))
+	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
 	h.messagesSent = 4
 
 	addr := "127.0.0.1:4150"
