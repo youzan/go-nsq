@@ -3,7 +3,7 @@ package nsq_test
 import (
 	"flag"
 
-	"github.com/nsqio/go-nsq"
+	"github.com/absolute8511/go-nsq"
 )
 
 func ExampleConfigFlag() {
