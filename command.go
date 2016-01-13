@@ -130,6 +130,12 @@ func Ping() *Command {
 }
 
 // Publish creates a new Command to write a message to a given topic
+func CreateTopic(topic string, partition int) *Command {
+	var params = [][]byte{[]byte(topic), []byte(strconv.Itoa(partition))}
+	return &Command{[]byte("CREATE_TOPIC"), params, nil}
+}
+
+// Publish creates a new Command to write a message to a given topic
 func Publish(topic string, body []byte) *Command {
 	var params = [][]byte{[]byte(topic)}
 	return &Command{[]byte("PUB"), params, body}
