@@ -3,11 +3,27 @@ package nsq
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const (
 	FailedOnNotLeader = "E_FAILED_ON_NOT_LEADER"
+	E_TOPIC_NOT_EXIST = "E_TOPIC_NOT_EXIST"
 )
+
+func IsFailedOnNotLeader(err error) bool {
+	if err != nil {
+		return strings.HasPrefix(err.Error(), FailedOnNotLeader)
+	}
+	return false
+}
+
+func IsTopicNotExist(err error) bool {
+	if err != nil {
+		return strings.HasPrefix(err.Error(), E_TOPIC_NOT_EXIST)
+	}
+	return false
+}
 
 // ErrNotConnected is returned when a publish command is made
 // against a Producer that is not connected

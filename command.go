@@ -141,18 +141,13 @@ func Publish(topic string, body []byte) *Command {
 	return &Command{[]byte("PUB"), params, body}
 }
 
-// DeferredPublish creates a new Command to write a message to a given topic
-// where the message will queue at the channel level until the timeout expires
-func DeferredPublish(topic string, delay time.Duration, body []byte) *Command {
-	var params = [][]byte{[]byte(topic), []byte(strconv.Itoa(int(delay / time.Millisecond)))}
-	return &Command{[]byte("DPUB"), params, body}
+// Publish creates a new Command to write a message to a given topic
+func PublishWithPart(topic string, part string, body []byte) *Command {
+	var params = [][]byte{[]byte(topic), []byte(part)}
+	return &Command{[]byte("PUB"), params, body}
 }
 
-// MultiPublish creates a new Command to write more than one message to a given topic
-// (useful for high-throughput situations to avoid roundtrips and saturate the pipe)
-func MultiPublish(topic string, bodies [][]byte) (*Command, error) {
-	var params = [][]byte{[]byte(topic)}
-
+func getMPubBody(bodies [][]byte) (*bytes.Buffer, error) {
 	num := uint32(len(bodies))
 	bodySize := 4
 	for _, b := range bodies {
@@ -175,13 +170,41 @@ func MultiPublish(topic string, bodies [][]byte) (*Command, error) {
 			return nil, err
 		}
 	}
+	return buf, nil
+}
 
+// MultiPublish creates a new Command to write more than one message to a given topic
+// (useful for high-throughput situations to avoid roundtrips and saturate the pipe)
+func MultiPublish(topic string, bodies [][]byte) (*Command, error) {
+	var params = [][]byte{[]byte(topic)}
+
+	buf, err := getMPubBody(bodies)
+	if err != nil {
+		return nil, err
+	}
+	return &Command{[]byte("MPUB"), params, buf.Bytes()}, nil
+}
+
+// MultiPublish creates a new Command to write more than one message to a given topic
+// (useful for high-throughput situations to avoid roundtrips and saturate the pipe)
+func MultiPublishWithPart(topic string, part string, bodies [][]byte) (*Command, error) {
+	var params = [][]byte{[]byte(topic), []byte(part)}
+
+	buf, err := getMPubBody(bodies)
+	if err != nil {
+		return nil, err
+	}
 	return &Command{[]byte("MPUB"), params, buf.Bytes()}, nil
 }
 
 // Subscribe creates a new Command to subscribe to the given topic/channel
 func Subscribe(topic string, channel string) *Command {
 	var params = [][]byte{[]byte(topic), []byte(channel)}
+	return &Command{[]byte("SUB"), params, nil}
+}
+
+func SubscribeWithPart(topic string, channel string, part string) *Command {
+	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part)}
 	return &Command{[]byte("SUB"), params, nil}
 }
 

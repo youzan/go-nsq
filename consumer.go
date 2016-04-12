@@ -101,10 +101,11 @@ type Consumer struct {
 
 	behaviorDelegate interface{}
 
-	id      int64
-	topic   string
-	channel string
-	config  Config
+	id        int64
+	topic     string
+	partition int
+	channel   string
+	config    Config
 
 	rngMtx sync.Mutex
 	rng    *rand.Rand
@@ -145,6 +146,10 @@ type Consumer struct {
 // The only valid way to create a Config is via NewConfig, using a struct literal will panic.
 // After Config is passed into NewConsumer the values are no longer mutable (they are copied).
 func NewConsumer(topic string, channel string, config *Config) (*Consumer, error) {
+	return NewPartitionConsumer(topic, -1, channel, config)
+}
+
+func NewPartitionConsumer(topic string, part int, channel string, config *Config) (*Consumer, error) {
 	config.assertInitialized()
 
 	if err := config.Validate(); err != nil {
@@ -162,9 +167,10 @@ func NewConsumer(topic string, channel string, config *Config) (*Consumer, error
 	r := &Consumer{
 		id: atomic.AddInt64(&instCount, 1),
 
-		topic:   topic,
-		channel: channel,
-		config:  *config,
+		topic:     topic,
+		partition: part,
+		channel:   channel,
+		config:    *config,
 
 		logger:      log.New(os.Stderr, "", log.Flags()),
 		logLvl:      LogLevelInfo,
@@ -437,6 +443,9 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 
 	v, err := url.ParseQuery(u.RawQuery)
 	v.Add("topic", r.topic)
+	if r.partition >= 0 {
+		v.Add("partition", strconv.Itoa(r.partition))
+	}
 	u.RawQuery = v.Encode()
 	return u.String(), listUrl.String()
 }
@@ -540,7 +549,7 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 
 	conn := NewConn(addr, &r.config, &consumerConnDelegate{r})
 	conn.SetLogger(logger, logLvl,
-		fmt.Sprintf("%3d [%s/%s] (%%s)", r.id, r.topic, r.channel))
+		fmt.Sprintf("%3d [%s(%v)/%s] (%%s)", r.id, r.topic, r.partition, r.channel))
 
 	r.mtx.Lock()
 	_, pendingOk := r.pendingConnections[addr]
@@ -579,11 +588,22 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 	}
 
 	cmd := Subscribe(r.topic, r.channel)
+	if r.partition >= 0 {
+		cmd = SubscribeWithPart(r.topic, r.channel, strconv.Itoa(r.partition))
+	}
 	err = conn.WriteCommand(cmd)
 	if err != nil {
 		cleanupConnection()
-		return fmt.Errorf("[%s] failed to subscribe to %s:%s - %s",
-			conn, r.topic, r.channel, err.Error())
+		if IsFailedOnNotLeader(err) || IsTopicNotExist(err) {
+			r.log(LogLevelInfo, "removing nsqd address %v for error: %v", addr, err)
+			r.DisconnectFromNSQD(addr)
+			select {
+			case r.lookupdRecheckChan <- 1:
+			default:
+			}
+		}
+		return fmt.Errorf("[%s] failed to subscribe to %s(%v):%s - %s",
+			conn, r.topic, r.partition, r.channel, err.Error())
 	}
 
 	r.mtx.Lock()
@@ -1179,7 +1199,7 @@ func (r *Consumer) log(lvl LogLevel, line string, args ...interface{}) {
 		return
 	}
 
-	logger.Output(2, fmt.Sprintf("%-4s %3d [%s/%s] %s",
-		lvl, r.id, r.topic, r.channel,
+	logger.Output(2, fmt.Sprintf("%-4s %3d [%s(%v)/%s] %s",
+		lvl, r.id, r.topic, r.partition, r.channel,
 		fmt.Sprintf(line, args...)))
 }
