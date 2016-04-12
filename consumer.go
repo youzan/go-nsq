@@ -326,6 +326,7 @@ func (r *Consumer) ConnectToNSQLookupd(addr string) error {
 	numLookupd := len(r.lookupdHTTPAddrs)
 	r.mtx.Unlock()
 
+	r.log(LogLevelInfo, "new lookupd address added: %s", addr)
 	// if this is the first one, kick off the go loop
 	if numLookupd == 1 {
 		r.queryLookupd()
@@ -334,6 +335,10 @@ func (r *Consumer) ConnectToNSQLookupd(addr string) error {
 	}
 
 	return nil
+}
+
+func (r *Consumer) AddEtcdServiceAddr(address []string, cluster string, key string) {
+	// TODO: get the lookup address from etcd service.
 }
 
 // ConnectToNSQLookupds adds multiple nsqlookupd address to the list for this Consumer instance.
@@ -405,7 +410,7 @@ exit:
 
 // return the next lookupd endpoint to query
 // keeping track of which one was last used
-func (r *Consumer) nextLookupdEndpoint() string {
+func (r *Consumer) nextLookupdEndpoint() (string, string) {
 	r.mtx.RLock()
 	if r.lookupdQueryIndex >= len(r.lookupdHTTPAddrs) {
 		r.lookupdQueryIndex = 0
@@ -424,20 +429,26 @@ func (r *Consumer) nextLookupdEndpoint() string {
 	if err != nil {
 		panic(err)
 	}
+	listUrl := *u
 	if u.Path == "/" || u.Path == "" {
 		u.Path = "/lookup"
 	}
+	listUrl.Path = "/listlookup"
 
 	v, err := url.ParseQuery(u.RawQuery)
 	v.Add("topic", r.topic)
 	u.RawQuery = v.Encode()
-	return u.String()
+	return u.String(), listUrl.String()
 }
 
 type lookupResp struct {
 	Channels  []string    `json:"channels"`
 	Producers []*peerInfo `json:"producers"`
 	Timestamp int64       `json:"timestamp"`
+}
+
+type lookupListResp struct {
+	LookupdNodes []string `json:"lookupdnodes"`
 }
 
 type peerInfo struct {
@@ -454,12 +465,22 @@ type peerInfo struct {
 //
 // initiate a connection to any new producers that are identified.
 func (r *Consumer) queryLookupd() {
-	endpoint := r.nextLookupdEndpoint()
+	endpoint, discoveryUrl := r.nextLookupdEndpoint()
+	// discovery other lookupd nodes from current lookupd or from etcd
+	r.log(LogLevelInfo, "discovery nsqlookupd %s", discoveryUrl)
+	var lookupdList lookupListResp
+	err := apiRequestNegotiateV1("GET", discoveryUrl, nil, &lookupdList)
+	if err != nil {
+		r.log(LogLevelError, "error discovery nsqlookupd (%s) - %s", discoveryUrl, err)
+	} else {
+		for _, addr := range lookupdList.LookupdNodes {
+			r.ConnectToNSQLookupd(addr)
+		}
+	}
 
 	r.log(LogLevelInfo, "querying nsqlookupd %s", endpoint)
-
 	var data lookupResp
-	err := apiRequestNegotiateV1("GET", endpoint, nil, &data)
+	err = apiRequestNegotiateV1("GET", endpoint, nil, &data)
 	if err != nil {
 		r.log(LogLevelError, "error querying nsqlookupd (%s) - %s", endpoint, err)
 		return

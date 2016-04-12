@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+const (
+	FailedOnNotLeader = "E_FAILED_ON_NOT_LEADER"
+)
+
 // ErrNotConnected is returned when a publish command is made
 // against a Producer that is not connected
 var ErrNotConnected = errors.New("not connected")
