@@ -265,6 +265,10 @@ func TestProducerHeartbeat(t *testing.T) {
 	readMessages(topicName, t, msgCount+1)
 }
 
+func TestProducerPublishToNotLeader(t *testing.T) {
+	// TODO:
+}
+
 func readMessages(topicName string, t *testing.T, msgCount int) {
 	config := NewConfig()
 	config.DefaultRequeueDelay = 0

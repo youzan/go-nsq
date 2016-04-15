@@ -451,9 +451,9 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 }
 
 type lookupResp struct {
-	Channels  []string    `json:"channels"`
-	Producers []*peerInfo `json:"producers"`
-	Timestamp int64       `json:"timestamp"`
+	Channels   []string             `json:"channels"`
+	Producers  []*peerInfo          `json:"producers"`
+	Partitions map[string]*peerInfo `json:"partitions"`
 }
 
 type lookupListResp struct {

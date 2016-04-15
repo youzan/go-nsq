@@ -154,6 +154,14 @@ func TestConsumerTLSClientCertViaSet(t *testing.T) {
 	})
 }
 
+func TestConsumerDiscoveryLookupd(t *testing.T) {
+	// TODO:
+}
+
+func TestConsumerSubToNotLeader(t *testing.T) {
+	// TODO:
+}
+
 func consumerTest(t *testing.T, cb func(c *Config)) {
 	config := NewConfig()
 	laddr := "127.0.0.1"
