@@ -45,7 +45,7 @@ func TestProducerConnection(t *testing.T) {
 
 	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
 
-	EnsureTopic(t, 4151, "write_test")
+	EnsureTopic(t, 4150, "write_test")
 	w, _ := NewProducer("127.0.0.1:4150", config)
 	w.SetLogger(nullLogger, LogLevelInfo)
 
@@ -87,7 +87,7 @@ func TestProducerPing(t *testing.T) {
 func TestProducerPublish(t *testing.T) {
 	topicName := "publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
-	EnsureTopic(t, 4151, topicName)
+	EnsureTopic(t, 4150, topicName)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -113,7 +113,7 @@ func TestProducerMultiPublish(t *testing.T) {
 	topicName := "multi_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 
-	EnsureTopic(t, 4151, topicName)
+	EnsureTopic(t, 4150, topicName)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -142,7 +142,7 @@ func TestProducerPublishAsync(t *testing.T) {
 	topicName := "async_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 
-	EnsureTopic(t, 4151, topicName)
+	EnsureTopic(t, 4150, topicName)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -179,7 +179,7 @@ func TestProducerMultiPublishAsync(t *testing.T) {
 	topicName := "multi_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 
-	EnsureTopic(t, 4151, topicName)
+	EnsureTopic(t, 4150, topicName)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -219,7 +219,7 @@ func TestProducerMultiPublishAsync(t *testing.T) {
 func TestProducerHeartbeat(t *testing.T) {
 	topicName := "heartbeat" + strconv.Itoa(int(time.Now().Unix()))
 
-	EnsureTopic(t, 4151, topicName)
+	EnsureTopic(t, 4150, topicName)
 
 	config := NewConfig()
 	config.HeartbeatInterval = 100 * time.Millisecond
@@ -282,7 +282,7 @@ func readMessages(topicName string, t *testing.T, msgCount int) {
 	}
 	q.AddHandler(h)
 
-	err := q.ConnectToNSQD("127.0.0.1:4150")
+	err := q.ConnectToNSQD("127.0.0.1:4150", 0)
 	if err != nil {
 		t.Fatalf(err.Error())
 	}

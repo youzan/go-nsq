@@ -245,7 +245,7 @@ func TestConsumerBackoff(t *testing.T) {
 	q, _ := NewConsumer(topicName, "ch", config)
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 	q.AddHandler(&testHandler{})
-	err := q.ConnectToNSQD(n.tcpAddr.String())
+	err := q.ConnectToNSQD(n.tcpAddr.String(), 0)
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
@@ -258,7 +258,7 @@ func TestConsumerBackoff(t *testing.T) {
 
 	expected := []string{
 		"IDENTIFY",
-		"SUB " + topicName + " ch",
+		"SUB " + topicName + " ch 0",
 		"RDY 5",
 		fmt.Sprintf("FIN %s", msgIDGood),
 		fmt.Sprintf("FIN %s", msgIDGood),
@@ -317,7 +317,7 @@ func TestConsumerRequeueNoBackoff(t *testing.T) {
 	q, _ := NewConsumer(topicName, "ch", config)
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 	q.AddHandler(&testHandler{})
-	err := q.ConnectToNSQD(n.tcpAddr.String())
+	err := q.ConnectToNSQD(n.tcpAddr.String(), 0)
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
@@ -335,7 +335,7 @@ func TestConsumerRequeueNoBackoff(t *testing.T) {
 
 	expected := []string{
 		"IDENTIFY",
-		"SUB " + topicName + " ch",
+		"SUB " + topicName + " ch 0",
 		"RDY 1",
 		"RDY 1",
 		"RDY 0",
@@ -389,7 +389,7 @@ func TestConsumerBackoffDisconnect(t *testing.T) {
 	q, _ := NewConsumer(topicName, "ch", config)
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 	q.AddHandler(&testHandler{})
-	err := q.ConnectToNSQD(n.tcpAddr.String())
+	err := q.ConnectToNSQD(n.tcpAddr.String(), 0)
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
@@ -407,7 +407,7 @@ func TestConsumerBackoffDisconnect(t *testing.T) {
 
 	expected := []string{
 		"IDENTIFY",
-		"SUB " + topicName + " ch",
+		"SUB " + topicName + " ch 0",
 		"RDY 5",
 		fmt.Sprintf("FIN %s", msgIDGood),
 		"RDY 0",
@@ -455,7 +455,7 @@ func TestConsumerBackoffDisconnect(t *testing.T) {
 
 	expected = []string{
 		"IDENTIFY",
-		"SUB " + topicName + " ch",
+		"SUB " + topicName + " ch 0",
 		"RDY 1",
 		"RDY 5",
 		fmt.Sprintf("FIN %s", msgIDGood),

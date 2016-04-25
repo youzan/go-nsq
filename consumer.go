@@ -122,7 +122,7 @@ type Consumer struct {
 	pendingConnections map[string]*Conn
 	connections        map[string]*Conn
 
-	nsqdTCPAddrs []string
+	nsqdTCPAddrs []AddrPartInfo
 
 	// used at connection close to force a possible reconnect
 	lookupdRecheckChan chan int
@@ -476,7 +476,7 @@ type peerInfo struct {
 func (r *Consumer) queryLookupd() {
 	endpoint, discoveryUrl := r.nextLookupdEndpoint()
 	// discovery other lookupd nodes from current lookupd or from etcd
-	r.log(LogLevelInfo, "discovery nsqlookupd %s", discoveryUrl)
+	r.log(LogLevelDebug, "discovery nsqlookupd %s", discoveryUrl)
 	var lookupdList lookupListResp
 	err := apiRequestNegotiateV1("GET", discoveryUrl, nil, &lookupdList)
 	if err != nil {
@@ -487,7 +487,7 @@ func (r *Consumer) queryLookupd() {
 		}
 	}
 
-	r.log(LogLevelInfo, "querying nsqlookupd %s", endpoint)
+	r.log(LogLevelDebug, "querying nsqlookupd %s", endpoint)
 	var data lookupResp
 	err = apiRequestNegotiateV1("GET", endpoint, nil, &data)
 	if err != nil {
@@ -496,18 +496,41 @@ func (r *Consumer) queryLookupd() {
 	}
 
 	var nsqdAddrs []string
-	for _, producer := range data.Producers {
-		broadcastAddress := producer.BroadcastAddress
-		port := producer.TCPPort
-		joined := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
-		nsqdAddrs = append(nsqdAddrs, joined)
+	partInfo := make(map[string]int, len(data.Partitions))
+
+	for pidStr, partProducer := range data.Partitions {
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil {
+			r.log(LogLevelError, "node partition string invalid: %v, %v", pidStr, err)
+			continue
+		}
+		broadcastAddress := partProducer.BroadcastAddress
+		port := partProducer.TCPPort
+		nsqdAddr := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
+		nsqdAddrs = append(nsqdAddrs, nsqdAddr)
+		partInfo[nsqdAddr] = pid
+	}
+
+	if len(data.Partitions) == 0 {
+		// for old lookup, no partition info for node.
+		// we always treat partition as -1
+		for _, producer := range data.Producers {
+			broadcastAddress := producer.BroadcastAddress
+			port := producer.TCPPort
+			joined := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
+			nsqdAddrs = append(nsqdAddrs, joined)
+		}
 	}
 	// apply filter
 	if discoveryFilter, ok := r.behaviorDelegate.(DiscoveryFilter); ok {
 		nsqdAddrs = discoveryFilter.Filter(nsqdAddrs)
 	}
 	for _, addr := range nsqdAddrs {
-		err = r.ConnectToNSQD(addr)
+		pid, ok := partInfo[addr]
+		if !ok {
+			pid = -1
+		}
+		err = r.ConnectToNSQD(addr, pid)
 		if err != nil && err != ErrAlreadyConnected {
 			r.log(LogLevelError, "(%s) error connecting to nsqd - %s", addr, err)
 			continue
@@ -519,9 +542,9 @@ func (r *Consumer) queryLookupd() {
 //
 // It is recommended to use ConnectToNSQLookupd so that topics are discovered
 // automatically.  This method is useful when you want to connect to local instance.
-func (r *Consumer) ConnectToNSQDs(addresses []string) error {
+func (r *Consumer) ConnectToNSQDs(addresses []AddrPartInfo) error {
 	for _, addr := range addresses {
-		err := r.ConnectToNSQD(addr)
+		err := r.ConnectToNSQD(addr.addr, addr.pid)
 		if err != nil {
 			return err
 		}
@@ -534,13 +557,17 @@ func (r *Consumer) ConnectToNSQDs(addresses []string) error {
 // It is recommended to use ConnectToNSQLookupd so that topics are discovered
 // automatically.  This method is useful when you want to connect to a single, local,
 // instance.
-func (r *Consumer) ConnectToNSQD(addr string) error {
+func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	if atomic.LoadInt32(&r.stopFlag) == 1 {
 		return errors.New("consumer stopped")
 	}
 
 	if atomic.LoadInt32(&r.runningHandlers) == 0 {
 		return errors.New("no handlers")
+	}
+
+	if r.partition != -1 && r.partition != part {
+		return errors.New("nsqd partition not matched with consumer partition")
 	}
 
 	atomic.StoreInt32(&r.connectedFlag, 1)
@@ -559,17 +586,18 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 		return ErrAlreadyConnected
 	}
 	r.pendingConnections[addr] = conn
-	if idx := indexOf(addr, r.nsqdTCPAddrs); idx == -1 {
-		r.nsqdTCPAddrs = append(r.nsqdTCPAddrs, addr)
+	if idx := indexOfAddrPartInfo(addr, r.nsqdTCPAddrs); idx == -1 {
+		r.nsqdTCPAddrs = append(r.nsqdTCPAddrs, AddrPartInfo{addr, part})
 	}
 	r.mtx.Unlock()
 
-	r.log(LogLevelInfo, "(%s) connecting to nsqd", addr)
+	r.log(LogLevelInfo, "consumer init new connection to nsqd: (%s) ", addr)
 
 	cleanupConnection := func() {
 		r.mtx.Lock()
 		delete(r.pendingConnections, addr)
 		r.mtx.Unlock()
+		r.log(LogLevelInfo, "consumer cleanup connection: (%s) ", addr)
 		conn.Close()
 	}
 
@@ -587,9 +615,12 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 		}
 	}
 
-	cmd := Subscribe(r.topic, r.channel)
-	if r.partition >= 0 {
-		cmd = SubscribeWithPart(r.topic, r.channel, strconv.Itoa(r.partition))
+	var cmd *Command
+	if part == -1 {
+		// consume from old nsqd with no partition
+		cmd = Subscribe(r.topic, r.channel)
+	} else {
+		cmd = SubscribeWithPart(r.topic, r.channel, strconv.Itoa(part))
 	}
 	err = conn.WriteCommand(cmd)
 	if err != nil {
@@ -602,8 +633,8 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 			default:
 			}
 		}
-		return fmt.Errorf("[%s] failed to subscribe to %s(%v):%s - %s",
-			conn, r.topic, r.partition, r.channel, err.Error())
+		return fmt.Errorf("%v [%s] failed to subscribe to %s(%v):%s - %s",
+			addr, conn, r.topic, part, r.channel, err.Error())
 	}
 
 	r.mtx.Lock()
@@ -617,6 +648,15 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 	}
 
 	return nil
+}
+
+func indexOfAddrPartInfo(n string, h []AddrPartInfo) int {
+	for i, a := range h {
+		if n == a.addr {
+			return i
+		}
+	}
+	return -1
 }
 
 func indexOf(n string, h []string) int {
@@ -634,7 +674,7 @@ func (r *Consumer) DisconnectFromNSQD(addr string) error {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
 
-	idx := indexOf(addr, r.nsqdTCPAddrs)
+	idx := indexOfAddrPartInfo(addr, r.nsqdTCPAddrs)
 	if idx == -1 {
 		return ErrNotConnected
 	}
@@ -763,7 +803,7 @@ func (r *Consumer) onConnClose(c *Conn) {
 
 	r.mtx.RLock()
 	numLookupd := len(r.lookupdHTTPAddrs)
-	reconnect := indexOf(c.String(), r.nsqdTCPAddrs) >= 0
+	reconnect := indexOfAddrPartInfo(c.String(), r.nsqdTCPAddrs) >= 0
 	r.mtx.RUnlock()
 	if numLookupd > 0 {
 		// trigger a poll of the lookupd
@@ -782,13 +822,18 @@ func (r *Consumer) onConnClose(c *Conn) {
 					break
 				}
 				r.mtx.RLock()
-				reconnect := indexOf(addr, r.nsqdTCPAddrs) >= 0
+				index := indexOfAddrPartInfo(addr, r.nsqdTCPAddrs)
+				reconnect := index >= 0
+				var addrInfo AddrPartInfo
+				if index != -1 {
+					addrInfo = r.nsqdTCPAddrs[index]
+				}
 				r.mtx.RUnlock()
 				if !reconnect {
 					r.log(LogLevelWarning, "(%s) skipped reconnect after removal...", addr)
 					return
 				}
-				err := r.ConnectToNSQD(addr)
+				err := r.ConnectToNSQD(addrInfo.addr, addrInfo.pid)
 				if err != nil && err != ErrAlreadyConnected {
 					r.log(LogLevelError, "(%s) error connecting to nsqd - %s", addr, err)
 					continue

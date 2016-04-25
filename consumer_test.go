@@ -56,15 +56,27 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 }
 
 func EnsureTopic(t *testing.T, port int, topic string) {
-	httpclient := &http.Client{}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/topic/create?topic=%s", port, topic)
-	req, err := http.NewRequest("POST", endpoint, nil)
-	resp, err := httpclient.Do(req)
+	endpoint := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", endpoint, 3*time.Second)
 	if err != nil {
 		t.Fatalf(err.Error())
 		return
 	}
-	resp.Body.Close()
+	conn.Write(MagicV2)
+	CreateTopic(topic, 0).WriteTo(conn)
+	resp, err := ReadResponse(conn)
+	if err != nil {
+		t.Fatal(err.Error())
+		return
+	}
+	frameType, data, err := UnpackResponse(resp)
+	if err != nil {
+		t.Fatal(err.Error())
+		return
+	}
+	if frameType == FrameTypeError {
+		t.Fatal(string(data))
+	}
 }
 
 func SendMessage(t *testing.T, port int, topic string, method string, body []byte) {
@@ -193,14 +205,14 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	}
 	q.AddHandler(h)
 
-	EnsureTopic(t, 4151, topicName)
+	EnsureTopic(t, 4150, topicName)
 	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
 	SendMessage(t, 4151, topicName, "mpub", []byte("{\"msg\":\"double\"}\n{\"msg\":\"double\"}"))
 	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
 	h.messagesSent = 4
 
 	addr := "127.0.0.1:4150"
-	err := q.ConnectToNSQD(addr)
+	err := q.ConnectToNSQD(addr, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +222,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 		t.Fatal("stats report 0 connections (should be > 0)")
 	}
 
-	err = q.ConnectToNSQD(addr)
+	err = q.ConnectToNSQD(addr, 0)
 	if err == nil {
 		t.Fatal("should not be able to connect to the same NSQ twice")
 	}
@@ -225,7 +237,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 		t.Fatal("should not be able to disconnect from an unknown nsqd")
 	}
 
-	err = q.ConnectToNSQD("1.2.3.4:4150")
+	err = q.ConnectToNSQD("1.2.3.4:4150", 0)
 	if err == nil {
 		t.Fatal("should not be able to connect to non-existent nsqd")
 	}
