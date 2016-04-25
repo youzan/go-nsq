@@ -269,6 +269,9 @@ func TestProducerPublishToNotLeader(t *testing.T) {
 	// TODO:
 }
 
+func TestTopicProducerMgr(t *testing.T) {
+}
+
 func readMessages(topicName string, t *testing.T, msgCount int) {
 	config := NewConfig()
 	config.DefaultRequeueDelay = 0

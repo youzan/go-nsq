@@ -476,6 +476,8 @@ type TopicProducerMgr struct {
 	exitChan           chan int
 	wg                 sync.WaitGroup
 	lookupdRecheckChan chan int
+	newTopicChan       chan string
+	newTopicRspChan    chan int
 }
 
 // use part=-1 to handle all partitions of topic
@@ -493,6 +495,8 @@ func NewTopicProducerMgr(topics []string, strategy PubStrategyType, conf *Config
 		config:             *conf,
 		lookupdRecheckChan: make(chan int, 1),
 		exitChan:           make(chan int),
+		newTopicChan:       make(chan string),
+		newTopicRspChan:    make(chan int),
 	}
 	for _, t := range topics {
 		mgr.topics[t] = NewTopicPartProducerInfo(0)
@@ -561,7 +565,7 @@ func (self *TopicProducerMgr) triggerCheckForError(err error, delay time.Duratio
 	}
 }
 
-func (self *TopicProducerMgr) nextLookupdEndpoint() (map[string]string, string) {
+func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]string, string) {
 	self.mtx.RLock()
 	if self.lookupdQueryIndex >= len(self.lookupdHTTPAddrs) {
 		self.lookupdQueryIndex = 0
@@ -587,18 +591,26 @@ func (self *TopicProducerMgr) nextLookupdEndpoint() (map[string]string, string) 
 	listUrl.Path = "/listlookup"
 
 	urlList := make(map[string]string, 0)
-	for t, _ := range self.topics {
+	if newTopic != "" {
 		tmpUrl := *u
 		v, _ := url.ParseQuery(tmpUrl.RawQuery)
-		v.Add("topic", t)
+		v.Add("topic", newTopic)
 		tmpUrl.RawQuery = v.Encode()
-		urlList[t] = tmpUrl.String()
+		urlList[newTopic] = tmpUrl.String()
+	} else {
+		for t, _ := range self.topics {
+			tmpUrl := *u
+			v, _ := url.ParseQuery(tmpUrl.RawQuery)
+			v.Add("topic", t)
+			tmpUrl.RawQuery = v.Encode()
+			urlList[t] = tmpUrl.String()
+		}
 	}
 	return urlList, listUrl.String()
 }
 
-func (self *TopicProducerMgr) queryLookupd() {
-	topicQueryList, discoveryUrl := self.nextLookupdEndpoint()
+func (self *TopicProducerMgr) queryLookupd(newTopic string) {
+	topicQueryList, discoveryUrl := self.nextLookupdEndpoint(newTopic)
 	// discovery other lookupd nodes from current lookupd or from etcd
 	self.log(LogLevelDebug, "discovery nsqlookupd %s", discoveryUrl)
 	var lookupdList lookupListResp
@@ -612,9 +624,18 @@ func (self *TopicProducerMgr) queryLookupd() {
 	}
 
 	for topicName, topicUrl := range topicQueryList {
+		if newTopic != "" {
+			if topicName != newTopic {
+				continue
+			}
+		}
 		self.log(LogLevelDebug, "querying nsqlookupd for topic %s", topicUrl)
 		self.topicMtx.Lock()
 		partProducerInfo, ok := self.topics[topicName]
+		if newTopic != "" {
+			self.topics[topicName] = NewTopicPartProducerInfo(0)
+			ok = true
+		}
 		self.topicMtx.Unlock()
 		if !ok {
 			self.log(LogLevelError, "topic %v is not set.", topicName)
@@ -704,10 +725,14 @@ func (self *TopicProducerMgr) lookupLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			self.queryLookupd()
+			self.queryLookupd("")
 		case <-self.lookupdRecheckChan:
-			self.queryLookupd()
+			self.queryLookupd("")
+		case topic := <-self.newTopicChan:
+			self.queryLookupd(topic)
+			self.newTopicRspChan <- 1
 		case <-self.exitChan:
+			close(self.newTopicRspChan)
 			return
 		}
 	}
@@ -748,7 +773,16 @@ func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) 
 	partProducerInfo, ok := self.topics[topic]
 	self.topicMtx.RUnlock()
 	if !ok {
-		return nil, -1, ErrTopicNotSet
+		self.newTopicChan <- topic
+		select {
+		case <-self.newTopicRspChan:
+			self.topicMtx.RLock()
+			partProducerInfo, ok = self.topics[topic]
+			self.topicMtx.RUnlock()
+			if !ok {
+				return nil, -1, ErrTopicNotSet
+			}
+		}
 	}
 	pid, addr := self.getNextProducerAddr(partProducerInfo)
 	if addr == "" {
