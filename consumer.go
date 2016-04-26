@@ -456,8 +456,18 @@ type lookupResp struct {
 	Partitions map[string]*peerInfo `json:"partitions"`
 }
 
+type NsqLookupdNodeInfo struct {
+	ID       string
+	NodeIp   string
+	TcpPort  string
+	HttpPort string
+	RpcPort  string
+	Epoch    int64
+}
+
 type lookupListResp struct {
-	LookupdNodes []string `json:"lookupdnodes"`
+	LookupdNodes  []NsqLookupdNodeInfo `json:"lookupdnodes"`
+	LookupdLeader NsqLookupdNodeInfo   `json:"lookupdleader"`
 }
 
 type peerInfo struct {
@@ -482,7 +492,8 @@ func (r *Consumer) queryLookupd() {
 	if err != nil {
 		r.log(LogLevelError, "error discovery nsqlookupd (%s) - %s", discoveryUrl, err)
 	} else {
-		for _, addr := range lookupdList.LookupdNodes {
+		for _, node := range lookupdList.LookupdNodes {
+			addr := net.JoinHostPort(node.NodeIp, node.HttpPort)
 			r.ConnectToNSQLookupd(addr)
 		}
 	}
@@ -509,6 +520,7 @@ func (r *Consumer) queryLookupd() {
 		nsqdAddr := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
 		nsqdAddrs = append(nsqdAddrs, nsqdAddr)
 		partInfo[nsqdAddr] = pid
+		r.log(LogLevelDebug, "producer found %s , partition: %v", nsqdAddr, pid)
 	}
 
 	if len(data.Partitions) == 0 {
@@ -519,6 +531,7 @@ func (r *Consumer) queryLookupd() {
 			port := producer.TCPPort
 			joined := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
 			nsqdAddrs = append(nsqdAddrs, joined)
+			r.log(LogLevelDebug, "producer found %s without partition", joined)
 		}
 	}
 	// apply filter
@@ -625,14 +638,6 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	err = conn.WriteCommand(cmd)
 	if err != nil {
 		cleanupConnection()
-		if IsFailedOnNotLeader(err) || IsTopicNotExist(err) {
-			r.log(LogLevelInfo, "removing nsqd address %v for error: %v", addr, err)
-			r.DisconnectFromNSQD(addr)
-			select {
-			case r.lookupdRecheckChan <- 1:
-			default:
-			}
-		}
 		return fmt.Errorf("%v [%s] failed to subscribe to %s(%v):%s - %s",
 			addr, conn, r.topic, part, r.channel, err.Error())
 	}
@@ -752,7 +757,19 @@ func (r *Consumer) onConnResponse(c *Conn, data []byte) {
 	}
 }
 
-func (r *Consumer) onConnError(c *Conn, data []byte) {}
+func (r *Consumer) onConnError(c *Conn, data []byte) {
+	r.log(LogLevelInfo, "conn %v error response : %v", c.RemoteAddr(), string(data))
+	if IsFailedOnNotLeaderBytes(data) || IsTopicNotExistBytes(data) {
+		addr := c.RemoteAddr()
+		r.log(LogLevelInfo, "removing nsqd address %v for error: %v", addr, string(data))
+		r.DisconnectFromNSQD(addr.String())
+		select {
+		case r.lookupdRecheckChan <- 1:
+		default:
+		}
+		r.log(LogLevelInfo, "removed for error response")
+	}
+}
 
 func (r *Consumer) onConnHeartbeat(c *Conn) {}
 

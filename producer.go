@@ -618,7 +618,8 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 	if err != nil {
 		self.log(LogLevelError, "error discovery nsqlookupd (%s) - %s", discoveryUrl, err)
 	} else {
-		for _, addr := range lookupdList.LookupdNodes {
+		for _, node := range lookupdList.LookupdNodes {
+			addr := net.JoinHostPort(node.NodeIp, node.HttpPort)
 			self.ConnectToNSQLookupd(addr)
 		}
 	}

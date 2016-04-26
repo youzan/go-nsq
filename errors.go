@@ -1,14 +1,17 @@
 package nsq
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
 )
 
-const (
-	FailedOnNotLeader = "E_FAILED_ON_NOT_LEADER"
-	E_TOPIC_NOT_EXIST = "E_TOPIC_NOT_EXIST"
+var (
+	FailedOnNotLeader       = "E_FAILED_ON_NOT_LEADER"
+	FailedOnNotLeaderBytes  = []byte("E_FAILED_ON_NOT_LEADER")
+	E_TOPIC_NOT_EXIST       = "E_TOPIC_NOT_EXIST"
+	E_TOPIC_NOT_EXIST_BYTES = []byte("E_TOPIC_NOT_EXIST")
 )
 
 func IsFailedOnNotLeader(err error) bool {
@@ -21,6 +24,20 @@ func IsFailedOnNotLeader(err error) bool {
 func IsTopicNotExist(err error) bool {
 	if err != nil {
 		return strings.HasPrefix(err.Error(), E_TOPIC_NOT_EXIST)
+	}
+	return false
+}
+
+func IsFailedOnNotLeaderBytes(err []byte) bool {
+	if err != nil {
+		return bytes.HasPrefix(err, FailedOnNotLeaderBytes)
+	}
+	return false
+}
+
+func IsTopicNotExistBytes(err []byte) bool {
+	if err != nil {
+		return bytes.HasPrefix(err, E_TOPIC_NOT_EXIST_BYTES)
 	}
 	return false
 }

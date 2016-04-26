@@ -197,7 +197,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	}
 	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
 	q, _ := NewConsumer(topicName, "ch", config)
-	// q.SetLogger(nullLogger, LogLevelInfo)
+	q.SetLogger(log.New(os.Stderr, "", log.Flags()), LogLevelDebug)
 
 	h := &MyTestHandler{
 		t: t,
@@ -212,7 +212,16 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	h.messagesSent = 4
 
 	addr := "127.0.0.1:4150"
-	err := q.ConnectToNSQD(addr, 0)
+	err := q.ConnectToNSQD(addr, 2)
+	if err == nil {
+		time.Sleep(time.Second)
+		// should call on error
+		if len(q.connections) > 0 || len(q.nsqdTCPAddrs) > 0 {
+			t.Fatal("should disconnect from the NSQ with not exist partition !!!")
+		}
+	}
+
+	err = q.ConnectToNSQD(addr, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

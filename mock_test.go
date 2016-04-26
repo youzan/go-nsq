@@ -384,12 +384,15 @@ func TestConsumerBackoffDisconnect(t *testing.T) {
 	config := NewConfig()
 	config.MaxInFlight = 5
 	config.BackoffMultiplier = 10 * time.Millisecond
-	config.LookupdPollInterval = 10 * time.Millisecond
+	config.LookupdPollInterval = time.Second
 	config.RDYRedistributeInterval = 10 * time.Millisecond
-	q, _ := NewConsumer(topicName, "ch", config)
+	q, err := NewConsumer(topicName, "ch", config)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 	q.AddHandler(&testHandler{})
-	err := q.ConnectToNSQD(n.tcpAddr.String(), 0)
+	err = q.ConnectToNSQD(n.tcpAddr.String(), 0)
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
@@ -441,6 +444,7 @@ func TestConsumerBackoffDisconnect(t *testing.T) {
 	}
 
 	n = newMockNSQD(script, n.tcpAddr.String())
+	time.Sleep(config.LookupdPollInterval)
 
 	select {
 	case <-n.exitChan:
