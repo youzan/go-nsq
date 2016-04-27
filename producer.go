@@ -545,6 +545,7 @@ func (self *TopicProducerMgr) ConnectToNSQLookupd(addr string) error {
 	self.log(LogLevelInfo, "new lookupd address added: %s", addr)
 	// if this is the first one, kick off the go loop
 	if numLookupd == 1 {
+		self.queryLookupd("")
 		self.wg.Add(1)
 		go self.lookupLoop()
 	}
@@ -610,6 +611,9 @@ func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]s
 }
 
 func (self *TopicProducerMgr) queryLookupd(newTopic string) {
+	if newTopic != "" {
+		self.log(LogLevelInfo, "new topic %v added", newTopic)
+	}
 	topicQueryList, discoveryUrl := self.nextLookupdEndpoint(newTopic)
 	// discovery other lookupd nodes from current lookupd or from etcd
 	self.log(LogLevelDebug, "discovery nsqlookupd %s", discoveryUrl)
@@ -634,7 +638,8 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		self.topicMtx.Lock()
 		partProducerInfo, ok := self.topics[topicName]
 		if newTopic != "" {
-			self.topics[topicName] = NewTopicPartProducerInfo(0)
+			partProducerInfo = NewTopicPartProducerInfo(0)
+			self.topics[topicName] = partProducerInfo
 			ok = true
 		}
 		self.topicMtx.Unlock()
@@ -730,7 +735,12 @@ func (self *TopicProducerMgr) lookupLoop() {
 		case <-self.lookupdRecheckChan:
 			self.queryLookupd("")
 		case topic := <-self.newTopicChan:
-			self.queryLookupd(topic)
+			self.topicMtx.RLock()
+			_, ok := self.topics[topic]
+			self.topicMtx.RUnlock()
+			if !ok {
+				self.queryLookupd(topic)
+			}
 			self.newTopicRspChan <- 1
 		case <-self.exitChan:
 			close(self.newTopicRspChan)
@@ -925,7 +935,7 @@ func (self *TopicProducerMgr) log(lvl LogLevel, line string, args ...interface{}
 		return
 	}
 
-	logger.Output(2, fmt.Sprintf("%-4s %3d %s", lvl, fmt.Sprintf(line, args...)))
+	logger.Output(2, fmt.Sprintf("%-4s %s", lvl, fmt.Sprintf(line, args...)))
 }
 
 func (self *TopicProducerMgr) SetLogger(l logger, lvl LogLevel) {

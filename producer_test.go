@@ -269,7 +269,15 @@ func TestProducerPublishToNotLeader(t *testing.T) {
 	// TODO:
 }
 
-func TestTopicProducerMgr(t *testing.T) {
+func TestTopicProducerMgrDynamicTopic(t *testing.T) {
+	testTopicProducerMgr(t, true)
+}
+
+func TestTopicProducerMgrStaticTopic(t *testing.T) {
+	testTopicProducerMgr(t, false)
+}
+
+func testTopicProducerMgr(t *testing.T, dynamic bool) {
 	topicName := "topic_producer_mgr_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 	topicList := make([]string, 0)
@@ -282,11 +290,15 @@ func TestTopicProducerMgr(t *testing.T) {
 	time.Sleep(time.Second * 5)
 
 	config := NewConfig()
-	w, err := NewTopicProducerMgr(topicList, PubRR, config)
+	initTopics := make([]string, 0)
+	if !dynamic {
+		initTopics = topicList
+	}
+	w, err := NewTopicProducerMgr(initTopics, PubRR, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SetLogger(nullLogger, LogLevelInfo)
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
 	lookupList := make([]string, 0)
 	lookupList = append(lookupList, "127.0.0.1:4161")
 	w.AddLookupdNodes(lookupList)
@@ -393,11 +405,8 @@ func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) 
 	config.DefaultRequeueDelay = 0
 	config.MaxBackoffDuration = 50 * time.Millisecond
 	q, _ := NewConsumer(topicName, "ch", config)
-	if useLookup {
-		q.SetLogger(log.New(os.Stderr, "", log.LstdFlags), LogLevelInfo)
-	} else {
-		q.SetLogger(nullLogger, LogLevelInfo)
-	}
+	//q.SetLogger(log.New(os.Stderr, "", log.LstdFlags), LogLevelInfo)
+	q.SetLogger(nullLogger, LogLevelInfo)
 
 	h := &ConsumerHandler{
 		t: t,
