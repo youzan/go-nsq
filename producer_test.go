@@ -106,7 +106,7 @@ func TestProducerPublish(t *testing.T) {
 		t.Fatalf("error %s", err)
 	}
 
-	readMessages(topicName, t, msgCount)
+	readMessages(topicName, t, msgCount, false)
 }
 
 func TestProducerMultiPublish(t *testing.T) {
@@ -135,7 +135,7 @@ func TestProducerMultiPublish(t *testing.T) {
 		t.Fatalf("error %s", err)
 	}
 
-	readMessages(topicName, t, msgCount)
+	readMessages(topicName, t, msgCount, false)
 }
 
 func TestProducerPublishAsync(t *testing.T) {
@@ -172,7 +172,7 @@ func TestProducerPublishAsync(t *testing.T) {
 		t.Fatalf("error %s", err)
 	}
 
-	readMessages(topicName, t, msgCount)
+	readMessages(topicName, t, msgCount, false)
 }
 
 func TestProducerMultiPublishAsync(t *testing.T) {
@@ -213,7 +213,7 @@ func TestProducerMultiPublishAsync(t *testing.T) {
 		t.Fatalf("error %s", err)
 	}
 
-	readMessages(topicName, t, msgCount)
+	readMessages(topicName, t, msgCount, false)
 }
 
 func TestProducerHeartbeat(t *testing.T) {
@@ -262,7 +262,7 @@ func TestProducerHeartbeat(t *testing.T) {
 		t.Fatalf("error %s", err)
 	}
 
-	readMessages(topicName, t, msgCount+1)
+	readMessages(topicName, t, msgCount+1, false)
 }
 
 func TestProducerPublishToNotLeader(t *testing.T) {
@@ -270,14 +270,134 @@ func TestProducerPublishToNotLeader(t *testing.T) {
 }
 
 func TestTopicProducerMgr(t *testing.T) {
+	topicName := "topic_producer_mgr_publish" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 10
+	topicList := make([]string, 0)
+	for i := 0; i < 10; i++ {
+		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName)
+	}
+
+	// wait nsqd report to lookupd
+	time.Sleep(time.Second * 5)
+
+	config := NewConfig()
+	w, err := NewTopicProducerMgr(topicList, PubRR, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(nullLogger, LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4161")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	var testData [][]byte
+	for i := 0; i < msgCount; i++ {
+		testData = append(testData, []byte("multipublish_test_case"))
+	}
+
+	var wg sync.WaitGroup
+	// test multipub
+	for _, tn := range topicList {
+		wg.Add(1)
+		go func(tname string) {
+			defer wg.Done()
+			err := w.MultiPublish(tname, testData)
+			if err != nil {
+				t.Fatalf("error %s", err)
+			}
+
+			err = w.Publish(tname, []byte("bad_test_case"))
+			if err != nil {
+				t.Fatalf("error %s", err)
+			}
+
+		}(tn)
+	}
+	wg.Wait()
+	for _, tn := range topicList {
+		readMessages(tn, t, msgCount, true)
+	}
+
+	// test multi async pub
+	for _, tn := range topicList {
+		wg.Add(1)
+		go func(tname string) {
+			defer wg.Done()
+			responseChan := make(chan *ProducerTransaction)
+			err := w.MultiPublishAsync(tname, testData, responseChan, tname, 1)
+			if err != nil {
+				t.Fatalf(err.Error())
+			}
+
+			trans := <-responseChan
+			if trans.Error != nil {
+				t.Fatalf(trans.Error.Error())
+			}
+			if trans.Args[0].(string) != tname {
+				t.Fatalf(`proxied arg "%s" != "%s"`, trans.Args[0].(string), tname)
+			}
+			if trans.Args[1].(int) != 1 {
+				t.Fatalf(`proxied arg %d != 1`, trans.Args[1].(int))
+			}
+			err = w.Publish(tname, []byte("bad_test_case"))
+			if err != nil {
+				t.Fatalf("error %s", err)
+			}
+		}(tn)
+	}
+	wg.Wait()
+
+	for _, tn := range topicList {
+		readMessages(tn, t, msgCount, true)
+	}
+
+	// test async pub
+	for _, tn := range topicList {
+		wg.Add(1)
+		go func(tname string) {
+			defer wg.Done()
+			responseChan := make(chan *ProducerTransaction, msgCount)
+			for i := 0; i < msgCount; i++ {
+				err := w.PublishAsync(tname, []byte("publish_test_case"), responseChan, tname)
+				if err != nil {
+					t.Fatalf(err.Error())
+				}
+			}
+
+			for i := 0; i < msgCount; i++ {
+				trans := <-responseChan
+				if trans.Error != nil {
+					t.Fatalf(trans.Error.Error())
+				}
+				if trans.Args[0].(string) != tname {
+					t.Fatalf(`proxied arg "%s" != "%s"`, trans.Args[0].(string), tname)
+				}
+			}
+
+			err := w.Publish(tname, []byte("bad_test_case"))
+			if err != nil {
+				t.Fatalf("error %s", err)
+			}
+		}(tn)
+	}
+	wg.Wait()
+	for _, tn := range topicList {
+		readMessages(tn, t, msgCount, true)
+	}
 }
 
-func readMessages(topicName string, t *testing.T, msgCount int) {
+func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) {
 	config := NewConfig()
 	config.DefaultRequeueDelay = 0
 	config.MaxBackoffDuration = 50 * time.Millisecond
 	q, _ := NewConsumer(topicName, "ch", config)
-	q.SetLogger(nullLogger, LogLevelInfo)
+	if useLookup {
+		q.SetLogger(log.New(os.Stderr, "", log.LstdFlags), LogLevelInfo)
+	} else {
+		q.SetLogger(nullLogger, LogLevelInfo)
+	}
 
 	h := &ConsumerHandler{
 		t: t,
@@ -285,9 +405,16 @@ func readMessages(topicName string, t *testing.T, msgCount int) {
 	}
 	q.AddHandler(h)
 
-	err := q.ConnectToNSQD("127.0.0.1:4150", 0)
-	if err != nil {
-		t.Fatalf(err.Error())
+	if useLookup {
+		err := q.ConnectToNSQLookupd("127.0.0.1:4161")
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
+	} else {
+		err := q.ConnectToNSQD("127.0.0.1:4150", 0)
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
 	}
 	<-q.StopChan
 

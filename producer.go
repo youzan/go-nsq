@@ -552,7 +552,7 @@ func (self *TopicProducerMgr) ConnectToNSQLookupd(addr string) error {
 }
 
 // for async operation, the async error should be check by the application if async operation has error.
-func (self *TopicProducerMgr) triggerCheckForError(err error, delay time.Duration) {
+func (self *TopicProducerMgr) TriggerCheckForError(err error, delay time.Duration) {
 	if err == nil {
 		return
 	}
@@ -824,8 +824,8 @@ func (self *TopicProducerMgr) MultiPublishAsync(topic string, body [][]byte, don
 	}, args)
 }
 
-func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan chan *ProducerTransaction, commandFunc func(pid int) (*Command, error),
-	args ...interface{}) error {
+func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan chan *ProducerTransaction,
+	commandFunc func(pid int) (*Command, error), args []interface{}) error {
 	retry := uint32(0)
 	var err error
 	var producer *Producer
@@ -905,7 +905,7 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(
 		err = producer.sendCommand(cmd)
 		if err != nil {
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
-			self.triggerCheckForError(err, time.Millisecond*100)
+			self.TriggerCheckForError(err, time.Millisecond*100)
 			time.Sleep(time.Millisecond * time.Duration(10*(2<<retry)))
 		} else {
 			break

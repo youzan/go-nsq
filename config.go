@@ -92,7 +92,7 @@ type Config struct {
 	// used to Initialize, Validate
 	configHandlers []configHandler
 
-	DialTimeout time.Duration `opt:"dial_timeout" default:"1s"`
+	DialTimeout time.Duration `opt:"dial_timeout" default:"5s"`
 
 	// Deadlines for network reads and writes
 	ReadTimeout  time.Duration `opt:"read_timeout" min:"100ms" max:"5m" default:"60s"`
