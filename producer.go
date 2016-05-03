@@ -566,6 +566,8 @@ func (self *TopicProducerMgr) TriggerCheckForError(err error, delay time.Duratio
 	}
 }
 
+// TODO: may be we can move the lookup query to some other manager class and all producer share the
+// lookup manager
 func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]string, string) {
 	self.mtx.RLock()
 	if self.lookupdQueryIndex >= len(self.lookupdHTTPAddrs) {
@@ -650,6 +652,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		var data lookupResp
 		err = apiRequestNegotiateV1("GET", topicUrl, nil, &data)
 		if err != nil {
+			// TODO: handle removing the failed nsqlookup and try get the new list.
 			self.log(LogLevelError, "error querying nsqlookupd (%s) - %s", topicUrl, err)
 			continue
 		}
