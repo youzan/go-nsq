@@ -59,6 +59,7 @@ type Producer struct {
 	exitChan            chan int
 	wg                  sync.WaitGroup
 	guard               sync.Mutex
+	failedCnt           int32
 }
 
 // ProducerTransaction is returned by the async publish methods
@@ -276,9 +277,11 @@ func (w *Producer) connect() error {
 	if err != nil {
 		w.conn.Close()
 		w.log(LogLevelError, "(%s) error connecting to nsqd - %s", w.addr, err)
+		atomic.AddInt32(&w.failedCnt, 1)
 		return err
 	}
 	atomic.StoreInt32(&w.state, StateConnected)
+	atomic.StoreInt32(&w.failedCnt, 0)
 	w.closeChan = make(chan int)
 	w.wg.Add(1)
 	go w.router()
@@ -782,6 +785,28 @@ func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartPro
 	return addrInfo.pid, addrInfo.addr
 }
 
+func (self *TopicProducerMgr) removeProducer(addr string) {
+	self.topicMtx.Lock()
+	for topic, v := range self.topics {
+		for index, info := range v.allPartitions {
+			if info.addr == addr {
+				self.log(LogLevelInfo, "remove producer info %v from topic %v", info, topic)
+				v.removePartitionInfo(uint32(index))
+			}
+		}
+	}
+	self.topicMtx.Unlock()
+	self.producerMtx.Lock()
+	producer, ok := self.producers[addr]
+	if ok {
+		delete(self.producers, addr)
+	}
+	self.producerMtx.Unlock()
+	if ok {
+		producer.Stop()
+	}
+}
+
 func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) {
 	self.topicMtx.RLock()
 	partProducerInfo, ok := self.topics[topic]
@@ -865,6 +890,9 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan cha
 		err = producer.sendCommandAsync(cmd, doneChan, args)
 		if err != nil {
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
+			if atomic.LoadInt32(&producer.failedCnt) > 3 {
+				self.removeProducer(producer.addr)
+			}
 			time.Sleep(time.Millisecond * time.Duration(10*(2<<retry)))
 		} else {
 			break
@@ -918,6 +946,9 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(
 		err = producer.sendCommand(cmd)
 		if err != nil {
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
+			if atomic.LoadInt32(&producer.failedCnt) > 3 {
+				self.removeProducer(producer.addr)
+			}
 			self.TriggerCheckForError(err, time.Millisecond*100)
 			time.Sleep(time.Millisecond * time.Duration(10*(2<<retry)))
 		} else {
