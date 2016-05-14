@@ -771,10 +771,10 @@ func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartPro
 			break
 		}
 		if self.pubStrategy == PubRR {
-			if int32(partProducerInfo.currentIndex) >= int32(len(partProducerInfo.allPartitions))-1 {
+			index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
+			if int32(partProducerInfo.currentIndex) >= int32(len(partProducerInfo.allPartitions)) {
 				partProducerInfo.currentIndex = 0
 			}
-			index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
 			addrInfo = partProducerInfo.getPartitionInfo(index)
 			retry++
 		} else {

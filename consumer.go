@@ -520,7 +520,7 @@ func (r *Consumer) queryLookupd() {
 		nsqdAddr := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
 		nsqdAddrs = append(nsqdAddrs, nsqdAddr)
 		partInfo[nsqdAddr] = pid
-		r.log(LogLevelDebug, "producer found %s , partition: %v", nsqdAddr, pid)
+		r.log(LogLevelInfo, "producer found %s , partition: %v", nsqdAddr, pid)
 	}
 
 	if len(data.Partitions) == 0 {
@@ -589,7 +589,7 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 
 	conn := NewConn(addr, &r.config, &consumerConnDelegate{r})
 	conn.SetLogger(logger, logLvl,
-		fmt.Sprintf("%3d [%s(%v)/%s] (%%s)", r.id, r.topic, r.partition, r.channel))
+		fmt.Sprintf("%3d [%s(%v)/%s] (%%s)", r.id, r.topic, part, r.channel))
 
 	r.mtx.Lock()
 	_, pendingOk := r.pendingConnections[addr]
@@ -604,7 +604,8 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	}
 	r.mtx.Unlock()
 
-	r.log(LogLevelInfo, "consumer init new connection to nsqd: (%s) ", addr)
+	r.log(LogLevelInfo, "consumer init new connection to nsqd: (%s) for topic %v-%v, channel: %v",
+		addr, r.topic, part, r.channel)
 
 	cleanupConnection := func() {
 		r.mtx.Lock()
