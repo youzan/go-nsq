@@ -45,7 +45,7 @@ func TestProducerConnection(t *testing.T) {
 
 	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
 
-	EnsureTopic(t, 4150, "write_test")
+	EnsureTopic(t, 4150, "write_test", 0)
 	w, _ := NewProducer("127.0.0.1:4150", config)
 	w.SetLogger(nullLogger, LogLevelInfo)
 
@@ -87,7 +87,7 @@ func TestProducerPing(t *testing.T) {
 func TestProducerPublish(t *testing.T) {
 	topicName := "publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
-	EnsureTopic(t, 4150, topicName)
+	EnsureTopic(t, 4150, topicName, 0)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -113,7 +113,7 @@ func TestProducerMultiPublish(t *testing.T) {
 	topicName := "multi_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 
-	EnsureTopic(t, 4150, topicName)
+	EnsureTopic(t, 4150, topicName, 0)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -142,7 +142,7 @@ func TestProducerPublishAsync(t *testing.T) {
 	topicName := "async_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 
-	EnsureTopic(t, 4150, topicName)
+	EnsureTopic(t, 4150, topicName, 0)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -179,7 +179,7 @@ func TestProducerMultiPublishAsync(t *testing.T) {
 	topicName := "multi_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 
-	EnsureTopic(t, 4150, topicName)
+	EnsureTopic(t, 4150, topicName, 0)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -219,7 +219,7 @@ func TestProducerMultiPublishAsync(t *testing.T) {
 func TestProducerHeartbeat(t *testing.T) {
 	topicName := "heartbeat" + strconv.Itoa(int(time.Now().Unix()))
 
-	EnsureTopic(t, 4150, topicName)
+	EnsureTopic(t, 4150, topicName, 0)
 
 	config := NewConfig()
 	config.HeartbeatInterval = 100 * time.Millisecond
@@ -277,17 +277,68 @@ func TestTopicProducerMgrStaticTopic(t *testing.T) {
 	testTopicProducerMgr(t, false)
 }
 
+func TestTopicProducerMgrGetNextProducer(t *testing.T) {
+	topicName := "topic_producer_mgr_publish" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 10
+	topicList := make([]string, 0)
+	for i := 0; i < 3; i++ {
+		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 0)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 1)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 2)
+	}
+
+	// wait nsqd report to lookupd
+	time.Sleep(time.Second * 3)
+
+	config := NewConfig()
+	initTopics := make([]string, 0)
+	initTopics = topicList
+	w, err := NewTopicProducerMgr(initTopics, PubRR, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4161")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	var testData [][]byte
+	for i := 0; i < msgCount; i++ {
+		testData = append(testData, []byte("multipublish_test_case"))
+	}
+
+	for _, tn := range topicList {
+		_, pid, err := w.getProducer(tn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, pid2, err := w.getProducer(tn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, pid3, err := w.getProducer(tn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pid == pid2 || pid == pid3 || pid2 == pid3 {
+			t.Fatalf("should get different partitions for producer: %v, %v , %v", pid, pid2, pid3)
+		}
+	}
+}
+
 func testTopicProducerMgr(t *testing.T, dynamic bool) {
 	topicName := "topic_producer_mgr_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 	topicList := make([]string, 0)
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 3; i++ {
 		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
-		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 0)
 	}
 
 	// wait nsqd report to lookupd
-	time.Sleep(time.Second * 5)
+	time.Sleep(time.Second * 3)
 
 	config := NewConfig()
 	initTopics := make([]string, 0)
@@ -320,17 +371,18 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 				t.Fatalf("error %s", err)
 			}
 
-			err = w.Publish(tname, []byte("bad_test_case"))
-			if err != nil {
-				t.Fatalf("error %s", err)
-			}
+			go func() {
+				time.Sleep(time.Second)
+				err = w.Publish(tname, []byte("bad_test_case"))
+				if err != nil {
+					t.Fatalf("error %s", err)
+				}
+			}()
 
+			readMessages(tname, t, msgCount, true)
 		}(tn)
 	}
 	wg.Wait()
-	for _, tn := range topicList {
-		readMessages(tn, t, msgCount, true)
-	}
 
 	// test multi async pub
 	for _, tn := range topicList {
@@ -353,17 +405,17 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 			if trans.Args[1].(int) != 1 {
 				t.Fatalf(`proxied arg %d != 1`, trans.Args[1].(int))
 			}
-			err = w.Publish(tname, []byte("bad_test_case"))
-			if err != nil {
-				t.Fatalf("error %s", err)
-			}
+			go func() {
+				time.Sleep(time.Second)
+				err = w.Publish(tname, []byte("bad_test_case"))
+				if err != nil {
+					t.Fatalf("error %s", err)
+				}
+			}()
+			readMessages(tname, t, msgCount, true)
 		}(tn)
 	}
 	wg.Wait()
-
-	for _, tn := range topicList {
-		readMessages(tn, t, msgCount, true)
-	}
 
 	// test async pub
 	for _, tn := range topicList {
@@ -388,16 +440,17 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 				}
 			}
 
-			err := w.Publish(tname, []byte("bad_test_case"))
-			if err != nil {
-				t.Fatalf("error %s", err)
-			}
+			go func() {
+				time.Sleep(time.Second)
+				err := w.Publish(tname, []byte("bad_test_case"))
+				if err != nil {
+					t.Fatalf("error %s", err)
+				}
+			}()
+			readMessages(tname, t, msgCount, true)
 		}(tn)
 	}
 	wg.Wait()
-	for _, tn := range topicList {
-		readMessages(tn, t, msgCount, true)
-	}
 }
 
 func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) {

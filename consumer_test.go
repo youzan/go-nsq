@@ -55,7 +55,7 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 	return nil
 }
 
-func EnsureTopic(t *testing.T, port int, topic string) {
+func EnsureTopic(t *testing.T, port int, topic string, part int) {
 	endpoint := fmt.Sprintf("127.0.0.1:%d", port)
 	conn, err := net.DialTimeout("tcp", endpoint, 3*time.Second)
 	if err != nil {
@@ -63,7 +63,7 @@ func EnsureTopic(t *testing.T, port int, topic string) {
 		return
 	}
 	conn.Write(MagicV2)
-	CreateTopic(topic, 0).WriteTo(conn)
+	CreateTopic(topic, part).WriteTo(conn)
 	resp, err := ReadResponse(conn)
 	if err != nil {
 		t.Fatal(err.Error())
@@ -205,7 +205,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	}
 	q.AddHandler(h)
 
-	EnsureTopic(t, 4150, topicName)
+	EnsureTopic(t, 4150, topicName, 0)
 	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
 	SendMessage(t, 4151, topicName, "mpub", []byte("{\"msg\":\"double\"}\n{\"msg\":\"double\"}"))
 	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))

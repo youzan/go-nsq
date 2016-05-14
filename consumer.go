@@ -592,6 +592,9 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 		fmt.Sprintf("%3d [%s(%v)/%s] (%%s)", r.id, r.topic, part, r.channel))
 
 	r.mtx.Lock()
+	// here we assume only partition for each topic on node
+	// if more than one partitions, in order to consume all partitions,
+	// we need more connections to the same node
 	_, pendingOk := r.pendingConnections[addr]
 	_, ok := r.connections[addr]
 	if ok || pendingOk {

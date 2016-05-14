@@ -772,10 +772,7 @@ func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartPro
 		}
 		if self.pubStrategy == PubRR {
 			index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
-			if int32(partProducerInfo.currentIndex) >= int32(len(partProducerInfo.allPartitions)) {
-				partProducerInfo.currentIndex = 0
-			}
-			addrInfo = partProducerInfo.getPartitionInfo(index)
+			addrInfo = partProducerInfo.getPartitionInfo(index % uint32(len(partProducerInfo.allPartitions)))
 			retry++
 		} else {
 			// TODO: other pub strategy
@@ -824,6 +821,7 @@ func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) 
 		}
 	}
 	pid, addr := self.getNextProducerAddr(partProducerInfo)
+	self.log(LogLevelInfo, "choosing %v producer: %v, %v", topic, pid, addr)
 	if addr == "" {
 		select {
 		case self.lookupdRecheckChan <- 1:
