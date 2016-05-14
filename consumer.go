@@ -764,10 +764,13 @@ func (r *Consumer) onConnError(c *Conn, data []byte) {
 		addr := c.RemoteAddr()
 		r.log(LogLevelInfo, "removing nsqd address %v for error: %v", addr, string(data))
 		r.DisconnectFromNSQD(addr.String())
-		select {
-		case r.lookupdRecheckChan <- 1:
-		default:
-		}
+		go func() {
+			time.Sleep(time.Second)
+			select {
+			case r.lookupdRecheckChan <- 1:
+			default:
+			}
+		}()
 		r.log(LogLevelInfo, "removed for error response")
 	}
 }
@@ -825,10 +828,13 @@ func (r *Consumer) onConnClose(c *Conn) {
 	r.mtx.RUnlock()
 	if numLookupd > 0 {
 		// trigger a poll of the lookupd
-		select {
-		case r.lookupdRecheckChan <- 1:
-		default:
-		}
+		go func() {
+			time.Sleep(time.Second)
+			select {
+			case r.lookupdRecheckChan <- 1:
+			default:
+			}
+		}()
 	} else if reconnect {
 		// there are no lookupd and we still have this nsqd TCP address in our list...
 		// try to reconnect after a bit
