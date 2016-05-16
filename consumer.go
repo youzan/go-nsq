@@ -443,6 +443,7 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 
 	v, err := url.ParseQuery(u.RawQuery)
 	v.Add("topic", r.topic)
+	v.Add("access", "r")
 	if r.partition >= 0 {
 		v.Add("partition", strconv.Itoa(r.partition))
 	}

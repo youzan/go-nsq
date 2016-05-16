@@ -601,6 +601,7 @@ func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]s
 		tmpUrl := *u
 		v, _ := url.ParseQuery(tmpUrl.RawQuery)
 		v.Add("topic", newTopic)
+		v.Add("access", "w")
 		tmpUrl.RawQuery = v.Encode()
 		urlList[newTopic] = tmpUrl.String()
 	} else {
@@ -608,6 +609,7 @@ func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]s
 			tmpUrl := *u
 			v, _ := url.ParseQuery(tmpUrl.RawQuery)
 			v.Add("topic", t)
+			v.Add("access", "w")
 			tmpUrl.RawQuery = v.Encode()
 			urlList[t] = tmpUrl.String()
 		}
@@ -821,7 +823,7 @@ func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) 
 		}
 	}
 	pid, addr := self.getNextProducerAddr(partProducerInfo)
-	self.log(LogLevelInfo, "choosing %v producer: %v, %v", topic, pid, addr)
+	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pid, addr)
 	if addr == "" {
 		select {
 		case self.lookupdRecheckChan <- 1:
