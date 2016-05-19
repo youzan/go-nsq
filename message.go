@@ -23,6 +23,10 @@ func GetCompatibleMsgIDFromNew(id NewMessageID, traceID uint64) MessageID {
 	return buf
 }
 
+func GetNewMessageID(old MessageID) NewMessageID {
+	return NewMessageID(binary.BigEndian.Uint64(old[:8]))
+}
+
 // Message is the fundamental data type containing
 // the id, body, and metadata
 type Message struct {
