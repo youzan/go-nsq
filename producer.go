@@ -562,11 +562,11 @@ func (self *TopicProducerMgr) TriggerCheckForError(err error, delay time.Duratio
 		return
 	}
 	if IsFailedOnNotLeader(err) || IsTopicNotExist(err) || IsFailedOnNotWritable(err) {
+		time.Sleep(delay)
 		select {
 		case self.lookupdRecheckChan <- 1:
 		default:
 		}
-		time.Sleep(delay)
 	}
 }
 
@@ -1001,7 +1001,7 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(
 				self.removeProducerForTopic(topic, pid, producer.addr)
 			}
 			if self.hasAnyProducer(topic) {
-				self.TriggerCheckForError(err, time.Second*time.Duration(retry))
+				go self.TriggerCheckForError(err, time.Second*time.Duration(retry+1))
 			} else {
 				self.TriggerCheckForError(err, time.Millisecond*100*time.Duration(retry))
 			}
