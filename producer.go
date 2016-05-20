@@ -16,6 +16,7 @@ import (
 
 const (
 	MAX_PARTITION_NUM = 1024
+	MIN_RETRY_SLEEP   = time.Millisecond * 32
 )
 
 var (
@@ -784,15 +785,47 @@ func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartPro
 	return addrInfo.pid, addrInfo.addr
 }
 
-func (self *TopicProducerMgr) removeProducer(addr string) {
+func (self *TopicProducerMgr) removeProducerForTopic(topic string, pid int, addr string) {
+	self.log(LogLevelInfo, "removing producer %v for topic %v-%v ", addr, topic, pid)
 	self.topicMtx.Lock()
-	for topic, v := range self.topics {
-		for index, info := range v.allPartitions {
-			if info.addr == addr {
-				self.log(LogLevelInfo, "remove producer info %v from topic %v", info, topic)
-				v.removePartitionInfo(uint32(index))
+	v, ok := self.topics[topic]
+	if ok {
+		newInfo := NewTopicPartProducerInfo(len(v.allPartitions))
+		newInfo.currentIndex = v.currentIndex
+		for _, p := range v.allPartitions {
+			newInfo.allPartitions = append(newInfo.allPartitions, p)
+		}
+		changed := false
+		for index, info := range newInfo.allPartitions {
+			if info.addr == addr && info.pid == pid {
+				self.log(LogLevelInfo, "remove producer info %v from topic %v-%v", info, topic, pid)
+				newInfo.removePartitionInfo(uint32(index))
+				changed = true
 			}
 		}
+		if changed {
+			self.topics[topic] = newInfo
+		}
+	}
+	self.topicMtx.Unlock()
+}
+
+func (self *TopicProducerMgr) removeProducer(addr string) {
+	self.log(LogLevelInfo, "removing producer %v ", addr)
+	self.topicMtx.Lock()
+	for topic, v := range self.topics {
+		newInfo := NewTopicPartProducerInfo(len(v.allPartitions))
+		newInfo.currentIndex = v.currentIndex
+		for _, p := range v.allPartitions {
+			newInfo.allPartitions = append(newInfo.allPartitions, p)
+		}
+		for index, info := range newInfo.allPartitions {
+			if info.addr == addr {
+				self.log(LogLevelInfo, "remove producer info %v from topic %v", info, topic)
+				newInfo.removePartitionInfo(uint32(index))
+			}
+		}
+		self.topics[topic] = newInfo
 	}
 	self.topicMtx.Unlock()
 	self.producerMtx.Lock()
@@ -875,7 +908,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan cha
 		if err != nil {
 			if err == ErrNoProducer {
 				self.log(LogLevelInfo, "No producer for topic %v", topic)
-				time.Sleep(time.Millisecond * time.Duration(10*(2<<retry)))
+				time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 				continue
 			} else {
 				break
@@ -893,7 +926,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan cha
 			if atomic.LoadInt32(&producer.failedCnt) > 3 {
 				self.removeProducer(producer.addr)
 			}
-			time.Sleep(time.Millisecond * time.Duration(10*(2<<retry)))
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
 			break
 		}
@@ -932,7 +965,7 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(
 		if err != nil {
 			if err == ErrNoProducer {
 				self.log(LogLevelInfo, "No producer for topic %v", topic)
-				time.Sleep(time.Millisecond * time.Duration(10*(2<<retry)))
+				time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 				continue
 			} else {
 				break
@@ -948,9 +981,12 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
 			if atomic.LoadInt32(&producer.failedCnt) > 3 {
 				self.removeProducer(producer.addr)
+			} else if IsFailedOnNotLeader(err) || IsFailedOnNotWritable(err) ||
+				IsTopicNotExist(err) {
+				self.removeProducerForTopic(topic, pid, producer.addr)
 			}
 			self.TriggerCheckForError(err, time.Millisecond*100)
-			time.Sleep(time.Millisecond * time.Duration(10*(2<<retry)))
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
 			break
 		}
