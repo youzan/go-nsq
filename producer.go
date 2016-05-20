@@ -839,6 +839,21 @@ func (self *TopicProducerMgr) removeProducer(addr string) {
 	}
 }
 
+func (self *TopicProducerMgr) hasAnyProducer(topic string) bool {
+	self.topicMtx.RLock()
+	partProducerInfo, ok := self.topics[topic]
+	self.topicMtx.RUnlock()
+	if !ok {
+		return false
+	}
+	for _, info := range partProducerInfo.allPartitions {
+		if info.addr != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) {
 	self.topicMtx.RLock()
 	partProducerInfo, ok := self.topics[topic]
@@ -985,7 +1000,11 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(
 				IsTopicNotExist(err) {
 				self.removeProducerForTopic(topic, pid, producer.addr)
 			}
-			self.TriggerCheckForError(err, time.Millisecond*100)
+			if self.hasAnyProducer(topic) {
+				self.TriggerCheckForError(err, time.Second*time.Duration(retry))
+			} else {
+				self.TriggerCheckForError(err, time.Millisecond*100*time.Duration(retry))
+			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
 			break
