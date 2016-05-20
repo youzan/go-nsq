@@ -764,7 +764,7 @@ func (r *Consumer) onConnResponse(c *Conn, data []byte) {
 
 func (r *Consumer) onConnError(c *Conn, data []byte) {
 	r.log(LogLevelInfo, "conn %v error response : %v", c.RemoteAddr(), string(data))
-	if IsFailedOnNotLeaderBytes(data) || IsTopicNotExistBytes(data) {
+	if IsFailedOnNotLeaderBytes(data) || IsTopicNotExistBytes(data) || IsFailedOnNotWritableBytes(data) {
 		addr := c.RemoteAddr()
 		r.log(LogLevelInfo, "removing nsqd address %v for error: %v", addr, string(data))
 		r.DisconnectFromNSQD(addr.String())

@@ -334,7 +334,7 @@ func (w *Producer) popTransaction(frameType int32, data []byte) {
 	w.transactions = w.transactions[1:]
 	if frameType == FrameTypeError {
 		t.Error = ErrProtocol{string(data)}
-		if IsFailedOnNotLeader(t.Error) || IsTopicNotExist(t.Error) {
+		if IsFailedOnNotLeader(t.Error) || IsTopicNotExist(t.Error) || IsFailedOnNotWritable(t.Error) {
 			// TODO: notify to reload topic-producer relation.
 		}
 	}
@@ -560,7 +560,7 @@ func (self *TopicProducerMgr) TriggerCheckForError(err error, delay time.Duratio
 	if err == nil {
 		return
 	}
-	if IsFailedOnNotLeader(err) || IsTopicNotExist(err) {
+	if IsFailedOnNotLeader(err) || IsTopicNotExist(err) || IsFailedOnNotWritable(err) {
 		select {
 		case self.lookupdRecheckChan <- 1:
 		default:

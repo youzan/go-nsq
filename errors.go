@@ -8,15 +8,24 @@ import (
 )
 
 var (
-	FailedOnNotLeader       = "E_FAILED_ON_NOT_LEADER"
-	FailedOnNotLeaderBytes  = []byte("E_FAILED_ON_NOT_LEADER")
-	E_TOPIC_NOT_EXIST       = "E_TOPIC_NOT_EXIST"
-	E_TOPIC_NOT_EXIST_BYTES = []byte("E_TOPIC_NOT_EXIST")
+	FailedOnNotLeader        = "E_FAILED_ON_NOT_LEADER"
+	FailedOnNotLeaderBytes   = []byte("E_FAILED_ON_NOT_LEADER")
+	E_TOPIC_NOT_EXIST        = "E_TOPIC_NOT_EXIST"
+	E_TOPIC_NOT_EXIST_BYTES  = []byte("E_TOPIC_NOT_EXIST")
+	FailedOnNotWritable      = "E_FAILED_ON_NOT_WRITABLE"
+	FailedOnNotWritableBytes = []byte("E_FAILED_ON_NOT_WRITABLE")
 )
 
 func IsFailedOnNotLeader(err error) bool {
 	if err != nil {
 		return strings.HasPrefix(err.Error(), FailedOnNotLeader)
+	}
+	return false
+}
+
+func IsFailedOnNotWritable(err error) bool {
+	if err != nil {
+		return strings.HasPrefix(err.Error(), FailedOnNotWritable)
 	}
 	return false
 }
@@ -38,6 +47,13 @@ func IsFailedOnNotLeaderBytes(err []byte) bool {
 func IsTopicNotExistBytes(err []byte) bool {
 	if err != nil {
 		return bytes.HasPrefix(err, E_TOPIC_NOT_EXIST_BYTES)
+	}
+	return false
+}
+
+func IsFailedOnNotWritableBytes(err []byte) bool {
+	if err != nil {
+		return bytes.HasPrefix(err, FailedOnNotWritableBytes)
 	}
 	return false
 }
