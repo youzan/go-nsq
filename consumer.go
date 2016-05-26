@@ -521,7 +521,7 @@ func (r *Consumer) queryLookupd() {
 		nsqdAddr := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
 		nsqdAddrs = append(nsqdAddrs, nsqdAddr)
 		partInfo[nsqdAddr] = pid
-		r.log(LogLevelInfo, "producer found %s , partition: %v", nsqdAddr, pid)
+		r.log(LogLevelDebug, "producer found %s , partition: %v", nsqdAddr, pid)
 	}
 
 	if len(data.Partitions) == 0 {

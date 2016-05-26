@@ -497,7 +497,7 @@ func NewTopicProducerMgr(topics []string, strategy PubStrategyType, conf *Config
 		pubStrategy:        strategy,
 		producers:          make(map[string]*Producer),
 		config:             *conf,
-		lookupdRecheckChan: make(chan int, 1),
+		lookupdRecheckChan: make(chan int),
 		exitChan:           make(chan int),
 		newTopicChan:       make(chan string),
 		newTopicRspChan:    make(chan int),
