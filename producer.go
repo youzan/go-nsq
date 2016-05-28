@@ -1,6 +1,7 @@
 package nsq
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -67,10 +68,11 @@ type Producer struct {
 // to retrieve metadata about the command after the
 // response is received.
 type ProducerTransaction struct {
-	cmd      *Command
-	doneChan chan *ProducerTransaction
-	Error    error         // the error (or nil) of the publish command
-	Args     []interface{} // the slice of variadic arguments passed to PublishAsync or MultiPublishAsync
+	cmd          *Command
+	doneChan     chan *ProducerTransaction
+	Error        error         // the error (or nil) of the publish command
+	Args         []interface{} // the slice of variadic arguments passed to PublishAsync or MultiPublishAsync
+	ResponseData []byte
 }
 
 func (t *ProducerTransaction) finish() {
@@ -198,7 +200,8 @@ func (w *Producer) MultiPublishAsync(topic string, body [][]byte, doneChan chan 
 // Publish synchronously publishes a message body to the specified topic, returning
 // an error if publish failed
 func (w *Producer) Publish(topic string, body []byte) error {
-	return w.sendCommand(Publish(topic, body))
+	_, err := w.sendCommand(Publish(topic, body))
+	return err
 }
 
 // MultiPublish synchronously publishes a slice of message bodies to the specified topic, returning
@@ -208,18 +211,19 @@ func (w *Producer) MultiPublish(topic string, body [][]byte) error {
 	if err != nil {
 		return err
 	}
-	return w.sendCommand(cmd)
+	_, err = w.sendCommand(cmd)
+	return err
 }
 
-func (w *Producer) sendCommand(cmd *Command) error {
+func (w *Producer) sendCommand(cmd *Command) ([]byte, error) {
 	doneChan := make(chan *ProducerTransaction)
 	err := w.sendCommandAsync(cmd, doneChan, nil)
 	if err != nil {
 		close(doneChan)
-		return err
+		return nil, err
 	}
 	t := <-doneChan
-	return t.Error
+	return t.ResponseData, t.Error
 }
 
 func (w *Producer) sendCommandAsync(cmd *Command, doneChan chan *ProducerTransaction,
@@ -338,6 +342,8 @@ func (w *Producer) popTransaction(frameType int32, data []byte) {
 		if IsFailedOnNotLeader(t.Error) || IsTopicNotExist(t.Error) || IsFailedOnNotWritable(t.Error) {
 			// TODO: notify to reload topic-producer relation.
 		}
+	} else {
+		t.ResponseData = data
 	}
 	t.finish()
 }
@@ -743,6 +749,7 @@ func (self *TopicProducerMgr) lookupLoop() {
 			self.queryLookupd("")
 		case <-self.lookupdRecheckChan:
 			self.queryLookupd("")
+			time.Sleep(time.Millisecond * 100)
 		case topic := <-self.newTopicChan:
 			self.topicMtx.RLock()
 			_, ok := self.topics[topic]
@@ -950,29 +957,49 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan cha
 }
 
 func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
-	return self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
 		if pid < 0 {
 			// pub to old nsqd that not support partition
 			return Publish(topic, body), nil
 		}
 		return PublishWithPart(topic, strconv.Itoa(pid), body), nil
 	})
+	return err
+}
+
+// pub with trace will return the message id and the message offset and size in the queue
+func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body []byte) (NewMessageID, uint64, uint32, error) {
+	resp, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+		return PublishTrace(topic, strconv.Itoa(pid), traceID, body)
+	})
+	// response should be : OK+16 bytes id+8bytes offset+4 bytes size
+	if len(resp) < 2+16+8+4 {
+		self.log(LogLevelError, "trace response invalid: %v", resp)
+		return 0, 0, 0, errors.New("trace response not valid")
+	}
+	id := GetNewMessageID(resp[2 : 2+16])
+	offset := binary.BigEndian.Uint64(resp[2+16 : 2+16+8])
+	rawSize := binary.BigEndian.Uint32(resp[2+16+8 : 2+16+8+4])
+	return id, offset, rawSize, err
 }
 
 func (self *TopicProducerMgr) MultiPublish(topic string, body [][]byte) error {
-	return self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
 		if pid < 0 {
 			// pub to old nsqd that not support partition
 			return MultiPublish(topic, body)
 		}
 		return MultiPublishWithPart(topic, strconv.Itoa(pid), body)
 	})
+	return err
 }
 
-func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(pid int) (*Command, error)) error {
+func (self *TopicProducerMgr) doCommandWithRetry(topic string,
+	commandFunc func(pid int) (*Command, error)) ([]byte, error) {
 	retry := uint32(0)
 	var err error
 	var producer *Producer
+	var resp []byte
 	pid := -1
 	for retry < 3 {
 		retry++
@@ -988,10 +1015,10 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(
 		}
 		cmd, err := commandFunc(pid)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
-		err = producer.sendCommand(cmd)
+		resp, err = producer.sendCommand(cmd)
 		if err != nil {
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
 			if atomic.LoadInt32(&producer.failedCnt) > 3 {
@@ -1010,7 +1037,7 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, commandFunc func(
 			break
 		}
 	}
-	return err
+	return resp, err
 }
 
 func (self *TopicProducerMgr) log(lvl LogLevel, line string, args ...interface{}) {

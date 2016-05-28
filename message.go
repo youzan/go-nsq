@@ -11,7 +11,7 @@ import (
 // The number of bytes for a Message.ID
 const MsgIDLength = 16
 
-// MessageID is the ASCII encoded hexadecimal message ID
+// MessageID is the binary bytes message ID
 type MessageID [MsgIDLength]byte
 
 type NewMessageID uint64
@@ -23,7 +23,7 @@ func GetCompatibleMsgIDFromNew(id NewMessageID, traceID uint64) MessageID {
 	return buf
 }
 
-func GetNewMessageID(old MessageID) NewMessageID {
+func GetNewMessageID(old []byte) NewMessageID {
 	return NewMessageID(binary.BigEndian.Uint64(old[:8]))
 }
 
@@ -41,6 +41,8 @@ type Message struct {
 
 	autoResponseDisabled int32
 	responded            int32
+	offset               uint64
+	rawSize              uint32
 }
 
 // NewMessage creates a Message, initializes some metadata,

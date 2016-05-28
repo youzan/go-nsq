@@ -177,6 +177,8 @@ type Config struct {
 
 	// secret for nsqd authentication (requires nsqd 0.2.29+)
 	AuthSecret string `opt:"auth_secret"`
+
+	EnableTrace bool `opt:"enable_trace"`
 }
 
 // NewConfig returns a new default nsq configuration.

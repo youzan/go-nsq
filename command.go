@@ -147,6 +147,20 @@ func PublishWithPart(topic string, part string, body []byte) *Command {
 	return &Command{[]byte("PUB"), params, body}
 }
 
+func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Command, error) {
+	var params = [][]byte{[]byte(topic), []byte(part)}
+	buf := bytes.NewBuffer(make([]byte, 0, 8+len(body)))
+	err := binary.Write(buf, binary.BigEndian, &traceID)
+	if err != nil {
+		return nil, err
+	}
+	_, err = buf.Write(body)
+	if err != nil {
+		return nil, err
+	}
+	return &Command{[]byte("PUBTRACE"), params, buf.Bytes()}, nil
+}
+
 func getMPubBody(bodies [][]byte) (*bytes.Buffer, error) {
 	num := uint32(len(bodies))
 	bodySize := 4
@@ -206,6 +220,16 @@ func Subscribe(topic string, channel string) *Command {
 func SubscribeWithPart(topic string, channel string, part string) *Command {
 	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part)}
 	return &Command{[]byte("SUB"), params, nil}
+}
+
+func SubscribeAndTrace(topic string, channel string) *Command {
+	var params = [][]byte{[]byte(topic), []byte(channel)}
+	return &Command{[]byte("SUBTRACE"), params, nil}
+}
+
+func SubscribeWithPartAndTrace(topic string, channel string, part string) *Command {
+	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part)}
+	return &Command{[]byte("SUBTRACE"), params, nil}
 }
 
 // Ready creates a new Command to specify

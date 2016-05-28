@@ -2,6 +2,7 @@ package nsq
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -636,9 +637,17 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	var cmd *Command
 	if part == -1 {
 		// consume from old nsqd with no partition
-		cmd = Subscribe(r.topic, r.channel)
+		if r.config.EnableTrace {
+			cmd = SubscribeAndTrace(r.topic, r.channel)
+		} else {
+			cmd = Subscribe(r.topic, r.channel)
+		}
 	} else {
-		cmd = SubscribeWithPart(r.topic, r.channel, strconv.Itoa(part))
+		if r.config.EnableTrace {
+			cmd = SubscribeWithPartAndTrace(r.topic, r.channel, strconv.Itoa(part))
+		} else {
+			cmd = SubscribeWithPart(r.topic, r.channel, strconv.Itoa(part))
+		}
 	}
 	err = conn.WriteCommand(cmd)
 	if err != nil {
@@ -727,6 +736,12 @@ func (r *Consumer) DisconnectFromNSQLookupd(addr string) error {
 func (r *Consumer) onConnMessage(c *Conn, msg *Message) {
 	atomic.AddInt64(&r.totalRdyCount, -1)
 	atomic.AddUint64(&r.messagesReceived, 1)
+	if r.config.EnableTrace && len(msg.Body) >= 12 {
+		// get the offset and rawSize from body
+		msg.offset = uint64(binary.BigEndian.Uint64(msg.Body[:8]))
+		msg.rawSize = uint32(binary.BigEndian.Uint32(msg.Body[8 : 8+4]))
+		msg.Body = msg.Body[8+4:]
+	}
 	r.incomingMessages <- msg
 	r.maybeUpdateRDY(c)
 }
