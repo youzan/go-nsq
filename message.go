@@ -41,8 +41,8 @@ type Message struct {
 
 	autoResponseDisabled int32
 	responded            int32
-	offset               uint64
-	rawSize              uint32
+	Offset               uint64
+	RawSize              uint32
 }
 
 // NewMessage creates a Message, initializes some metadata,

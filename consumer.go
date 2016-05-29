@@ -738,8 +738,8 @@ func (r *Consumer) onConnMessage(c *Conn, msg *Message) {
 	atomic.AddUint64(&r.messagesReceived, 1)
 	if r.config.EnableTrace && len(msg.Body) >= 12 {
 		// get the offset and rawSize from body
-		msg.offset = uint64(binary.BigEndian.Uint64(msg.Body[:8]))
-		msg.rawSize = uint32(binary.BigEndian.Uint32(msg.Body[8 : 8+4]))
+		msg.Offset = uint64(binary.BigEndian.Uint64(msg.Body[:8]))
+		msg.RawSize = uint32(binary.BigEndian.Uint32(msg.Body[8 : 8+4]))
 		msg.Body = msg.Body[8+4:]
 	}
 	r.incomingMessages <- msg
