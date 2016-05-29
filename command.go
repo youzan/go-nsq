@@ -158,7 +158,7 @@ func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Comm
 	if err != nil {
 		return nil, err
 	}
-	return &Command{[]byte("PUBTRACE"), params, buf.Bytes()}, nil
+	return &Command{[]byte("PUB_TRACE"), params, buf.Bytes()}, nil
 }
 
 func getMPubBody(bodies [][]byte) (*bytes.Buffer, error) {
@@ -224,12 +224,12 @@ func SubscribeWithPart(topic string, channel string, part string) *Command {
 
 func SubscribeAndTrace(topic string, channel string) *Command {
 	var params = [][]byte{[]byte(topic), []byte(channel)}
-	return &Command{[]byte("SUBTRACE"), params, nil}
+	return &Command{[]byte("SUB_TRACE"), params, nil}
 }
 
 func SubscribeWithPartAndTrace(topic string, channel string, part string) *Command {
 	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part)}
-	return &Command{[]byte("SUBTRACE"), params, nil}
+	return &Command{[]byte("SUB_TRACE"), params, nil}
 }
 
 // Ready creates a new Command to specify
