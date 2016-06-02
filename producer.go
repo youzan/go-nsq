@@ -972,14 +972,17 @@ func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body
 	resp, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
 		return PublishTrace(topic, strconv.Itoa(pid), traceID, body)
 	})
+	if err != nil {
+		return 0, 0, 0, err
+	}
 	// response should be : OK+16 bytes id+8bytes offset+4 bytes size
-	if len(resp) < 2+16+8+4 {
+	if len(resp) < 2+MsgIDLength+8+4 {
 		self.log(LogLevelError, "trace response invalid: %v", resp)
 		return 0, 0, 0, errors.New("trace response not valid")
 	}
-	id := GetNewMessageID(resp[2 : 2+16])
-	offset := binary.BigEndian.Uint64(resp[2+16 : 2+16+8])
-	rawSize := binary.BigEndian.Uint32(resp[2+16+8 : 2+16+8+4])
+	id := GetNewMessageID(resp[2 : 2+MsgIDLength])
+	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
+	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
 	return id, offset, rawSize, err
 }
 
@@ -992,6 +995,27 @@ func (self *TopicProducerMgr) MultiPublish(topic string, body [][]byte) error {
 		return MultiPublishWithPart(topic, strconv.Itoa(pid), body)
 	})
 	return err
+}
+
+func (self *TopicProducerMgr) MultiPublishAndTrace(topic string, traceIDList []uint64, body [][]byte) (NewMessageID, uint64, uint32, error) {
+	if len(traceIDList) != len(body) {
+		return 0, 0, 0, errors.New("arguments error")
+	}
+	resp, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+		return MultiPublishTrace(topic, strconv.Itoa(pid), traceIDList, body)
+	})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if len(resp) < 2+MsgIDLength+8+4 {
+		self.log(LogLevelError, "trace response invalid: %v", resp)
+		return 0, 0, 0, errors.New("trace response not valid")
+	}
+
+	id := GetNewMessageID(resp[2 : 2+MsgIDLength])
+	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
+	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
+	return id, offset, rawSize, err
 }
 
 func (self *TopicProducerMgr) doCommandWithRetry(topic string,

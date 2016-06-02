@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -187,6 +188,37 @@ func getMPubBody(bodies [][]byte) (*bytes.Buffer, error) {
 	return buf, nil
 }
 
+func getMPubBodyForTrace(traceIDList []uint64, bodies [][]byte) (*bytes.Buffer, error) {
+	num := uint32(len(bodies))
+	bodySize := 4
+	for _, b := range bodies {
+		bodySize += len(b) + 4 + 8
+	}
+	body := make([]byte, 0, bodySize)
+	buf := bytes.NewBuffer(body)
+
+	err := binary.Write(buf, binary.BigEndian, &num)
+	if err != nil {
+		return nil, err
+	}
+	for i, b := range bodies {
+		// the length should contain the body size + 8 bytes trace id.
+		err = binary.Write(buf, binary.BigEndian, int32(len(b)+8))
+		if err != nil {
+			return nil, err
+		}
+		err := binary.Write(buf, binary.BigEndian, traceIDList[i])
+		if err != nil {
+			return nil, err
+		}
+		_, err = buf.Write(b)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buf, nil
+}
+
 // MultiPublish creates a new Command to write more than one message to a given topic
 // (useful for high-throughput situations to avoid roundtrips and saturate the pipe)
 func MultiPublish(topic string, bodies [][]byte) (*Command, error) {
@@ -209,6 +241,20 @@ func MultiPublishWithPart(topic string, part string, bodies [][]byte) (*Command,
 		return nil, err
 	}
 	return &Command{[]byte("MPUB"), params, buf.Bytes()}, nil
+}
+
+// MultiPublish creates a new Command to write more than one message to a given topic
+// (useful for high-throughput situations to avoid roundtrips and saturate the pipe)
+func MultiPublishTrace(topic string, part string, traceIDList []uint64, bodies [][]byte) (*Command, error) {
+	if len(traceIDList) != len(bodies) {
+		return nil, errors.New("argument error")
+	}
+	var params = [][]byte{[]byte(topic), []byte(part)}
+	buf, err := getMPubBodyForTrace(traceIDList, bodies)
+	if err != nil {
+		return nil, err
+	}
+	return &Command{[]byte("MPUB_TRACE"), params, buf.Bytes()}, nil
 }
 
 // Subscribe creates a new Command to subscribe to the given topic/channel
