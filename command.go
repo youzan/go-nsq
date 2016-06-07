@@ -270,12 +270,37 @@ func SubscribeWithPart(topic string, channel string, part string) *Command {
 
 func SubscribeAndTrace(topic string, channel string) *Command {
 	var params = [][]byte{[]byte(topic), []byte(channel)}
-	return &Command{[]byte("SUB_TRACE"), params, nil}
+	return &Command{[]byte("SUB_ADVANCED"), params, nil}
 }
 
 func SubscribeWithPartAndTrace(topic string, channel string, part string) *Command {
 	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part)}
-	return &Command{[]byte("SUB_TRACE"), params, nil}
+	return &Command{[]byte("SUB_ADVANCED"), params, nil}
+}
+
+type ConsumeOffset struct {
+	OffsetType  string
+	OffsetValue int64
+}
+
+func (self *ConsumeOffset) SetCount(offset int64) {
+	self.OffsetType = "count"
+	self.OffsetValue = offset
+}
+
+// sub from the Millisecond since epoch time
+func (self *ConsumeOffset) SetTime(ms int64) {
+	self.OffsetType = "time"
+	self.OffsetValue = ms
+}
+
+func (self *ConsumeOffset) ToString() string {
+	return self.OffsetType + ":" + strconv.FormatInt(self.OffsetValue, 10)
+}
+
+func SubscribeAdvanced(topic string, channel string, part string, ordered bool, consumeStart ConsumeOffset) *Command {
+	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte("true"), []byte(consumeStart.ToString())}
+	return &Command{[]byte("SUB_ADVANCED"), params, nil}
 }
 
 // Ready creates a new Command to specify
