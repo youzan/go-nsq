@@ -278,19 +278,22 @@ func SubscribeWithPartAndTrace(topic string, channel string, part string) *Comma
 	return &Command{[]byte("SUB_ADVANCED"), params, nil}
 }
 
+var offsetCountType = "count"
+var offsetTimestampType = "timestamp"
+
 type ConsumeOffset struct {
 	OffsetType  string
 	OffsetValue int64
 }
 
 func (self *ConsumeOffset) SetCount(offset int64) {
-	self.OffsetType = "count"
+	self.OffsetType = offsetCountType
 	self.OffsetValue = offset
 }
 
 // sub from the Millisecond since epoch time
 func (self *ConsumeOffset) SetTime(ms int64) {
-	self.OffsetType = "time"
+	self.OffsetType = offsetTimestampType
 	self.OffsetValue = ms
 }
 
