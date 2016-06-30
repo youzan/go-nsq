@@ -278,31 +278,56 @@ func SubscribeWithPartAndTrace(topic string, channel string, part string) *Comma
 	return &Command{[]byte("SUB_ADVANCED"), params, nil}
 }
 
-var offsetCountType = "count"
-var offsetTimestampType = "timestamp"
+//var offsetCountType = "count"
+var OffsetTimestampType = "timestamp"
+var OffsetVirtualQueueType = "virtual_queue"
+var OffsetSpecialType = "special"
 
 type ConsumeOffset struct {
 	OffsetType  string
 	OffsetValue int64
 }
 
-func (self *ConsumeOffset) SetCount(offset int64) {
-	self.OffsetType = offsetCountType
+//func (self *ConsumeOffset) SetCount(offset int64) {
+//	self.OffsetType = offsetCountType
+//	self.OffsetValue = offset
+//}
+
+func (self *ConsumeOffset) SetToEnd() {
+	self.OffsetType = OffsetSpecialType
+	self.OffsetValue = -1
+}
+
+func (self *ConsumeOffset) SetVirtualQueueOffset(offset int64) {
+	self.OffsetType = OffsetVirtualQueueType
 	self.OffsetValue = offset
 }
 
-// sub from the Millisecond since epoch time
-func (self *ConsumeOffset) SetTime(ms int64) {
-	self.OffsetType = offsetTimestampType
-	self.OffsetValue = ms
+// sub from the second since epoch time
+func (self *ConsumeOffset) SetTime(sec int64) {
+	self.OffsetType = OffsetTimestampType
+	self.OffsetValue = sec
 }
 
 func (self *ConsumeOffset) ToString() string {
+	if self.OffsetType == "" {
+		return ""
+	}
 	return self.OffsetType + ":" + strconv.FormatInt(self.OffsetValue, 10)
 }
 
+func SubscribeOrdered(topic string, channel string, part string) *Command {
+	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte("true")}
+	return &Command{[]byte("SUB_ADVANCED"), params, nil}
+}
+
 func SubscribeAdvanced(topic string, channel string, part string, ordered bool, consumeStart ConsumeOffset) *Command {
-	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte("true"), []byte(consumeStart.ToString())}
+	var params [][]byte
+	if ordered {
+		params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte("true"), []byte(consumeStart.ToString())}
+	} else {
+		params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte("false"), []byte(consumeStart.ToString())}
+	}
 	return &Command{[]byte("SUB_ADVANCED"), params, nil}
 }
 

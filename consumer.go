@@ -140,6 +140,9 @@ type Consumer struct {
 	// read from this channel to block until consumer is cleanly stopped
 	StopChan chan int
 	exitChan chan int
+	// the offset will be set only once at the first sub to nsqd
+	offsetMutex   sync.Mutex
+	consumeOffset map[int]ConsumeOffset
 }
 
 // NewConsumer creates a new instance of Consumer for the specified topic/channel
@@ -193,6 +196,16 @@ func NewPartitionConsumer(topic string, part int, channel string, config *Config
 	r.wg.Add(1)
 	go r.rdyLoop()
 	return r, nil
+}
+
+func (r *Consumer) SetConsumeOffset(partition int, offset ConsumeOffset) error {
+	if !r.config.EnableTrace {
+		return errors.New("trace must be enabled to allow set consume offset")
+	}
+	r.offsetMutex.Lock()
+	r.consumeOffset[partition] = offset
+	r.offsetMutex.Unlock()
+	return nil
 }
 
 // Stats retrieves the current connection and message statistics for a Consumer
@@ -635,7 +648,19 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	}
 
 	var cmd *Command
+	var offset ConsumeOffset
+	var hasConsumeOffset bool
+	r.offsetMutex.Lock()
+	if offset, hasConsumeOffset = r.consumeOffset[part]; hasConsumeOffset {
+		r.log(LogLevelInfo, "topic %v partition %v consume offset at offset: %v", r.topic, part, offset)
+	}
+	r.offsetMutex.Unlock()
+
 	if part == -1 {
+		if hasConsumeOffset || r.config.EnableOrdered {
+			r.log(LogLevelError, "partition must be given for ordered consumer ")
+			return errors.New("missing partition for ordered consumer")
+		}
 		// consume from old nsqd with no partition
 		if r.config.EnableTrace {
 			cmd = SubscribeAndTrace(r.topic, r.channel)
@@ -643,7 +668,11 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 			cmd = Subscribe(r.topic, r.channel)
 		}
 	} else {
-		if r.config.EnableTrace {
+		if hasConsumeOffset {
+			cmd = SubscribeAdvanced(r.topic, r.channel, strconv.Itoa(part), r.config.EnableOrdered, offset)
+		} else if r.config.EnableOrdered {
+			cmd = SubscribeOrdered(r.topic, r.channel, strconv.Itoa(part))
+		} else if r.config.EnableTrace {
 			cmd = SubscribeWithPartAndTrace(r.topic, r.channel, strconv.Itoa(part))
 		} else {
 			cmd = SubscribeWithPart(r.topic, r.channel, strconv.Itoa(part))
@@ -654,6 +683,9 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 		cleanupConnection()
 		return fmt.Errorf("%v [%s] failed to subscribe to %s(%v):%s - %s",
 			addr, conn, r.topic, part, r.channel, err.Error())
+	}
+	if hasConsumeOffset {
+		delete(r.consumeOffset, part)
 	}
 
 	r.mtx.Lock()
@@ -736,7 +768,10 @@ func (r *Consumer) DisconnectFromNSQLookupd(addr string) error {
 func (r *Consumer) onConnMessage(c *Conn, msg *Message) {
 	atomic.AddInt64(&r.totalRdyCount, -1)
 	atomic.AddUint64(&r.messagesReceived, 1)
-	if r.config.EnableTrace && len(msg.Body) >= 12 {
+	if r.config.EnableOrdered || r.config.EnableTrace {
+		if len(msg.Body) < 12 {
+			r.log(LogLevelError, "invalid message body length: %v, %v", len(msg.Body), msg)
+		}
 		// get the offset and rawSize from body
 		msg.Offset = uint64(binary.BigEndian.Uint64(msg.Body[:8]))
 		msg.RawSize = uint32(binary.BigEndian.Uint32(msg.Body[8 : 8+4]))
