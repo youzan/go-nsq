@@ -190,8 +190,9 @@ func NewPartitionConsumer(topic string, part int, channel string, config *Config
 
 		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
 
-		StopChan: make(chan int),
-		exitChan: make(chan int),
+		StopChan:      make(chan int),
+		exitChan:      make(chan int),
+		consumeOffset: make(map[int]ConsumeOffset),
 	}
 	r.wg.Add(1)
 	go r.rdyLoop()
