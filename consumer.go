@@ -669,7 +669,7 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 		}
 	} else {
 		if hasConsumeOffset {
-			cmd = SubscribeAdvanced(r.topic, r.channel, strconv.Itoa(part), r.config.EnableOrdered, offset)
+			cmd = SubscribeAdvanced(r.topic, r.channel, strconv.Itoa(part), offset)
 		} else if r.config.EnableOrdered {
 			cmd = SubscribeOrdered(r.topic, r.channel, strconv.Itoa(part))
 		} else if r.config.EnableTrace {

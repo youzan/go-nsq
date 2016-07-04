@@ -317,17 +317,13 @@ func (self *ConsumeOffset) ToString() string {
 }
 
 func SubscribeOrdered(topic string, channel string, part string) *Command {
-	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte("true")}
-	return &Command{[]byte("SUB_ADVANCED"), params, nil}
+	var params = [][]byte{[]byte(topic), []byte(channel), []byte(part)}
+	return &Command{[]byte("SUB_ORDERED"), params, nil}
 }
 
-func SubscribeAdvanced(topic string, channel string, part string, ordered bool, consumeStart ConsumeOffset) *Command {
+func SubscribeAdvanced(topic string, channel string, part string, consumeStart ConsumeOffset) *Command {
 	var params [][]byte
-	if ordered {
-		params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte("true"), []byte(consumeStart.ToString())}
-	} else {
-		params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte("false"), []byte(consumeStart.ToString())}
-	}
+	params = [][]byte{[]byte(topic), []byte(channel), []byte(part), []byte(consumeStart.ToString())}
 	return &Command{[]byte("SUB_ADVANCED"), params, nil}
 }
 
