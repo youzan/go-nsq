@@ -162,6 +162,32 @@ func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Comm
 	return &Command{[]byte("PUB_TRACE"), params, buf.Bytes()}, nil
 }
 
+func getMPubBodyV2(bodies []*bytes.Buffer) (*bytes.Buffer, error) {
+	num := uint32(len(bodies))
+	bodySize := 4
+	for _, b := range bodies {
+		bodySize += b.Len() + 4
+	}
+	body := make([]byte, 0, bodySize)
+	buf := bytes.NewBuffer(body)
+
+	err := binary.Write(buf, binary.BigEndian, &num)
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range bodies {
+		err = binary.Write(buf, binary.BigEndian, b.Len())
+		if err != nil {
+			return nil, err
+		}
+		_, err = buf.Write(b.Bytes())
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buf, nil
+}
+
 func getMPubBody(bodies [][]byte) (*bytes.Buffer, error) {
 	num := uint32(len(bodies))
 	bodySize := 4
@@ -219,12 +245,32 @@ func getMPubBodyForTrace(traceIDList []uint64, bodies [][]byte) (*bytes.Buffer, 
 	return buf, nil
 }
 
+func MultiPublishV2(topic string, bodies []*bytes.Buffer) (*Command, error) {
+	var params = [][]byte{[]byte(topic)}
+
+	buf, err := getMPubBodyV2(bodies)
+	if err != nil {
+		return nil, err
+	}
+	return &Command{[]byte("MPUB"), params, buf.Bytes()}, nil
+}
+
 // MultiPublish creates a new Command to write more than one message to a given topic
 // (useful for high-throughput situations to avoid roundtrips and saturate the pipe)
 func MultiPublish(topic string, bodies [][]byte) (*Command, error) {
 	var params = [][]byte{[]byte(topic)}
 
 	buf, err := getMPubBody(bodies)
+	if err != nil {
+		return nil, err
+	}
+	return &Command{[]byte("MPUB"), params, buf.Bytes()}, nil
+}
+
+func MultiPublishWithPartV2(topic string, part string, bodies []*bytes.Buffer) (*Command, error) {
+	var params = [][]byte{[]byte(topic), []byte(part)}
+
+	buf, err := getMPubBodyV2(bodies)
 	if err != nil {
 		return nil, err
 	}

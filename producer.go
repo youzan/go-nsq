@@ -1,6 +1,7 @@
 package nsq
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -984,6 +985,17 @@ func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body
 	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
 	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
 	return id, offset, rawSize, err
+}
+
+func (self *TopicProducerMgr) MultiPublishV2(topic string, body []*bytes.Buffer) error {
+	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+		if pid < 0 {
+			// pub to old nsqd that not support partition
+			return MultiPublishV2(topic, body)
+		}
+		return MultiPublishWithPartV2(topic, strconv.Itoa(pid), body)
+	})
+	return err
 }
 
 func (self *TopicProducerMgr) MultiPublish(topic string, body [][]byte) error {
