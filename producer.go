@@ -1051,6 +1051,7 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string,
 		}
 		cmd, err := commandFunc(pid)
 		if err != nil {
+			self.log(LogLevelError, "get command err: %v", err)
 			return nil, err
 		}
 		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
