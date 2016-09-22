@@ -176,7 +176,7 @@ func getMPubBodyV2(bodies []*bytes.Buffer) (*bytes.Buffer, error) {
 		return nil, err
 	}
 	for _, b := range bodies {
-		err = binary.Write(buf, binary.BigEndian, b.Len())
+		err = binary.Write(buf, binary.BigEndian, int32(b.Len()))
 		if err != nil {
 			return nil, err
 		}
