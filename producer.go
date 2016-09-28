@@ -899,7 +899,7 @@ func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) 
 func (self *TopicProducerMgr) PublishAsync(topic string, body []byte, doneChan chan *ProducerTransaction,
 	args ...interface{}) error {
 	return self.doCommandAsyncWithRetry(topic, doneChan, func(pid int) (*Command, error) {
-		if pid < 0 {
+		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return Publish(topic, body), nil
 		}
@@ -910,7 +910,7 @@ func (self *TopicProducerMgr) PublishAsync(topic string, body []byte, doneChan c
 func (self *TopicProducerMgr) MultiPublishAsync(topic string, body [][]byte, doneChan chan *ProducerTransaction,
 	args ...interface{}) error {
 	return self.doCommandAsyncWithRetry(topic, doneChan, func(pid int) (*Command, error) {
-		if pid < 0 {
+		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return MultiPublish(topic, body)
 		}
@@ -959,7 +959,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan cha
 
 func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
 	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
-		if pid < 0 {
+		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return Publish(topic, body), nil
 		}
@@ -989,7 +989,7 @@ func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body
 
 func (self *TopicProducerMgr) MultiPublishV2(topic string, body []*bytes.Buffer) error {
 	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
-		if pid < 0 {
+		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return MultiPublishV2(topic, body)
 		}
@@ -1000,7 +1000,7 @@ func (self *TopicProducerMgr) MultiPublishV2(topic string, body []*bytes.Buffer)
 
 func (self *TopicProducerMgr) MultiPublish(topic string, body [][]byte) error {
 	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
-		if pid < 0 {
+		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return MultiPublish(topic, body)
 		}

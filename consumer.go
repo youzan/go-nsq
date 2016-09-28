@@ -18,6 +18,11 @@ import (
 	"time"
 )
 
+const (
+	// for old nsqd it may return the special pid for compatible
+	OLD_VERSION_PID = -11
+)
+
 // Handler is the message processing interface for Consumer
 //
 // Implement this interface for handlers that return whether or not message
@@ -657,7 +662,7 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	}
 	r.offsetMutex.Unlock()
 
-	if part == -1 {
+	if part == -1 || part == OLD_VERSION_PID {
 		if hasConsumeOffset || r.config.EnableOrdered {
 			r.log(LogLevelError, "partition must be given for ordered consumer ")
 			return errors.New("missing partition for ordered consumer")
