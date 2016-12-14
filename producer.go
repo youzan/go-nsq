@@ -417,12 +417,14 @@ type AddrPartInfo struct {
 type TopicPartProducerInfo struct {
 	currentIndex  uint32
 	allPartitions []AddrPartInfo
+	meta          metaInfo
 }
 
-func NewTopicPartProducerInfo(capacity int) *TopicPartProducerInfo {
+func NewTopicPartProducerInfo(meta metaInfo) *TopicPartProducerInfo {
 	return &TopicPartProducerInfo{
 		currentIndex:  0,
-		allPartitions: make([]AddrPartInfo, 0, capacity),
+		allPartitions: make([]AddrPartInfo, 0, meta.PartitionNum),
+		meta:          meta,
 	}
 }
 
@@ -472,6 +474,7 @@ type TopicProducerMgr struct {
 	pubStrategy        PubStrategyType
 	producerMtx        sync.RWMutex
 	topicMtx           sync.RWMutex
+	hashMtx            sync.Mutex
 	topics             map[string]*TopicPartProducerInfo
 	producers          map[string]*Producer
 	config             Config
@@ -492,7 +495,7 @@ type TopicProducerMgr struct {
 }
 
 // use part=-1 to handle all partitions of topic
-func NewTopicProducerMgr(topics []string, strategy PubStrategyType, conf *Config) (*TopicProducerMgr, error) {
+func NewTopicProducerMgr(topics []string, conf *Config) (*TopicProducerMgr, error) {
 	conf.assertInitialized()
 	err := conf.Validate()
 	if err != nil {
@@ -501,7 +504,7 @@ func NewTopicProducerMgr(topics []string, strategy PubStrategyType, conf *Config
 
 	mgr := &TopicProducerMgr{
 		topics:             make(map[string]*TopicPartProducerInfo, len(topics)),
-		pubStrategy:        strategy,
+		pubStrategy:        conf.PubStrategy,
 		producers:          make(map[string]*Producer),
 		config:             *conf,
 		lookupdRecheckChan: make(chan int),
@@ -510,7 +513,7 @@ func NewTopicProducerMgr(topics []string, strategy PubStrategyType, conf *Config
 		newTopicRspChan:    make(chan int),
 	}
 	for _, t := range topics {
-		mgr.topics[t] = NewTopicPartProducerInfo(0)
+		mgr.topics[t] = NewTopicPartProducerInfo(metaInfo{})
 	}
 	return mgr, nil
 }
@@ -653,7 +656,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		self.topicMtx.Lock()
 		partProducerInfo, ok := self.topics[topicName]
 		if newTopic != "" {
-			partProducerInfo = NewTopicPartProducerInfo(0)
+			partProducerInfo = NewTopicPartProducerInfo(metaInfo{})
 			self.topics[topicName] = partProducerInfo
 			ok = true
 		}
@@ -670,7 +673,10 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 			continue
 		}
 
-		newProducerInfo := NewTopicPartProducerInfo(len(data.Partitions))
+		if data.Meta.PartitionNum <= 0 {
+			data.Meta.PartitionNum = len(data.Partitions)
+		}
+		newProducerInfo := NewTopicPartProducerInfo(data.Meta)
 		changed := false
 		for partStr, producer := range data.Partitions {
 			partID, err := strconv.Atoi(partStr)
@@ -766,27 +772,42 @@ func (self *TopicProducerMgr) lookupLoop() {
 	}
 }
 
-func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartProducerInfo) (int, string) {
+func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartProducerInfo, partitionKey []byte) (int, string) {
 	addrInfo := AddrPartInfo{"", -1}
 	length := len(partProducerInfo.allPartitions)
 	if length == 0 {
 		return -1, ""
-	} else if length == 1 {
+	} else if length == 1 && self.pubStrategy != PubIDHash {
 		addrInfo = partProducerInfo.getPartitionInfo(0)
 		return addrInfo.pid, addrInfo.addr
 	}
 	retry := 0
 	index := uint32(0)
 	for addrInfo.addr == "" {
-		if retry >= length {
-			break
-		}
 		if self.pubStrategy == PubRR {
+			if retry >= length {
+				break
+			}
 			index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
 			addrInfo = partProducerInfo.getPartitionInfo(index % uint32(len(partProducerInfo.allPartitions)))
 			retry++
-		} else {
-			// TODO: other pub strategy
+		} else if self.pubStrategy == PubIDHash {
+			if partitionKey == nil {
+				self.log(LogLevelError, "partitionKey can not be nil while using hash pub strategy")
+				return -1, ""
+			}
+			if partProducerInfo.meta.PartitionNum <= 0 {
+				self.log(LogLevelError, "partition meta info invalid: %v", partProducerInfo.meta)
+				return -1, ""
+			}
+
+			self.hashMtx.Lock()
+			self.config.Hasher.Reset()
+			self.config.Hasher.Write(partitionKey)
+			hashV := self.config.Hasher.Sum32()
+			self.hashMtx.Unlock()
+			pid := int(hashV) % partProducerInfo.meta.PartitionNum
+			addrInfo = partProducerInfo.getSpecificPartitionInfo(pid)
 			break
 		}
 	}
@@ -798,7 +819,7 @@ func (self *TopicProducerMgr) removeProducerForTopic(topic string, pid int, addr
 	self.topicMtx.Lock()
 	v, ok := self.topics[topic]
 	if ok {
-		newInfo := NewTopicPartProducerInfo(len(v.allPartitions))
+		newInfo := NewTopicPartProducerInfo(v.meta)
 		newInfo.currentIndex = v.currentIndex
 		for _, p := range v.allPartitions {
 			newInfo.allPartitions = append(newInfo.allPartitions, p)
@@ -822,7 +843,7 @@ func (self *TopicProducerMgr) removeProducer(addr string) {
 	self.log(LogLevelInfo, "removing producer %v ", addr)
 	self.topicMtx.Lock()
 	for topic, v := range self.topics {
-		newInfo := NewTopicPartProducerInfo(len(v.allPartitions))
+		newInfo := NewTopicPartProducerInfo(v.meta)
 		newInfo.currentIndex = v.currentIndex
 		for _, p := range v.allPartitions {
 			newInfo.allPartitions = append(newInfo.allPartitions, p)
@@ -862,7 +883,7 @@ func (self *TopicProducerMgr) hasAnyProducer(topic string) bool {
 	return false
 }
 
-func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) {
+func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*Producer, int, error) {
 	self.topicMtx.RLock()
 	partProducerInfo, ok := self.topics[topic]
 	self.topicMtx.RUnlock()
@@ -878,7 +899,7 @@ func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) 
 			}
 		}
 	}
-	pid, addr := self.getNextProducerAddr(partProducerInfo)
+	pid, addr := self.getNextProducerAddr(partProducerInfo, partitionKey)
 	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pid, addr)
 	if addr == "" {
 		select {
@@ -898,7 +919,7 @@ func (self *TopicProducerMgr) getProducer(topic string) (*Producer, int, error) 
 
 func (self *TopicProducerMgr) PublishAsync(topic string, body []byte, doneChan chan *ProducerTransaction,
 	args ...interface{}) error {
-	return self.doCommandAsyncWithRetry(topic, doneChan, func(pid int) (*Command, error) {
+	return self.doCommandAsyncWithRetry(topic, nil, doneChan, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return Publish(topic, body), nil
@@ -909,7 +930,7 @@ func (self *TopicProducerMgr) PublishAsync(topic string, body []byte, doneChan c
 
 func (self *TopicProducerMgr) MultiPublishAsync(topic string, body [][]byte, doneChan chan *ProducerTransaction,
 	args ...interface{}) error {
-	return self.doCommandAsyncWithRetry(topic, doneChan, func(pid int) (*Command, error) {
+	return self.doCommandAsyncWithRetry(topic, nil, doneChan, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return MultiPublish(topic, body)
@@ -918,7 +939,8 @@ func (self *TopicProducerMgr) MultiPublishAsync(topic string, body [][]byte, don
 	}, args)
 }
 
-func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan chan *ProducerTransaction,
+func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, partitionKey []byte,
+	doneChan chan *ProducerTransaction,
 	commandFunc func(pid int) (*Command, error), args []interface{}) error {
 	retry := uint32(0)
 	var err error
@@ -927,7 +949,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan cha
 
 	for retry < 3 {
 		retry++
-		producer, pid, err = self.getProducer(topic)
+		producer, pid, err = self.getProducer(topic, partitionKey)
 		if err != nil {
 			if err == ErrNoProducer {
 				self.log(LogLevelInfo, "No producer for topic %v", topic)
@@ -958,7 +980,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, doneChan cha
 }
 
 func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
-	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+	_, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return Publish(topic, body), nil
@@ -968,9 +990,32 @@ func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
 	return err
 }
 
+func (self *TopicProducerMgr) PublishOrdered(topic string, partitionKey []byte, body []byte) (NewMessageID,
+	uint64, uint32, error) {
+	resp, err := self.doCommandWithRetry(topic, partitionKey, func(pid int) (*Command, error) {
+		if pid < 0 {
+			return nil, errors.New("ordered pub need partition id")
+		}
+		return PublishTrace(topic, strconv.Itoa(pid), 0, body)
+	})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	// response should be : OK+16 bytes id+8bytes offset+4 bytes size
+	if len(resp) < 2+MsgIDLength+8+4 {
+		self.log(LogLevelError, "trace response invalid: %v", resp)
+		return 0, 0, 0, errors.New("trace response not valid")
+	}
+	id := GetNewMessageID(resp[2 : 2+MsgIDLength])
+	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
+	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
+	return id, offset, rawSize, err
+}
+
 // pub with trace will return the message id and the message offset and size in the queue
-func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body []byte) (NewMessageID, uint64, uint32, error) {
-	resp, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body []byte) (NewMessageID,
+	uint64, uint32, error) {
+	resp, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
 		return PublishTrace(topic, strconv.Itoa(pid), traceID, body)
 	})
 	if err != nil {
@@ -988,7 +1033,7 @@ func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body
 }
 
 func (self *TopicProducerMgr) MultiPublishV2(topic string, body []*bytes.Buffer) error {
-	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+	_, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return MultiPublishV2(topic, body)
@@ -999,7 +1044,7 @@ func (self *TopicProducerMgr) MultiPublishV2(topic string, body []*bytes.Buffer)
 }
 
 func (self *TopicProducerMgr) MultiPublish(topic string, body [][]byte) error {
-	_, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+	_, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return MultiPublish(topic, body)
@@ -1013,7 +1058,7 @@ func (self *TopicProducerMgr) MultiPublishAndTrace(topic string, traceIDList []u
 	if len(traceIDList) != len(body) {
 		return 0, 0, 0, errors.New("arguments error")
 	}
-	resp, err := self.doCommandWithRetry(topic, func(pid int) (*Command, error) {
+	resp, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
 		return MultiPublishTrace(topic, strconv.Itoa(pid), traceIDList, body)
 	})
 	if err != nil {
@@ -1030,7 +1075,7 @@ func (self *TopicProducerMgr) MultiPublishAndTrace(topic string, traceIDList []u
 	return id, offset, rawSize, err
 }
 
-func (self *TopicProducerMgr) doCommandWithRetry(topic string,
+func (self *TopicProducerMgr) doCommandWithRetry(topic string, partitionKey []byte,
 	commandFunc func(pid int) (*Command, error)) ([]byte, error) {
 	retry := uint32(0)
 	var err error
@@ -1039,7 +1084,7 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string,
 	pid := -1
 	for retry < 3 {
 		retry++
-		producer, pid, err = self.getProducer(topic)
+		producer, pid, err = self.getProducer(topic, partitionKey)
 		if err != nil {
 			if err == ErrNoProducer {
 				self.log(LogLevelInfo, "No producer for topic %v", topic)

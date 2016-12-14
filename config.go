@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"hash"
 	"io/ioutil"
 	"log"
 	"math"
@@ -180,6 +181,8 @@ type Config struct {
 
 	EnableTrace   bool `opt:"enable_trace"`
 	EnableOrdered bool `opt:"enable_ordered"`
+	Hasher        hash.Hash32
+	PubStrategy   PubStrategyType
 }
 
 // NewConfig returns a new default nsq configuration.

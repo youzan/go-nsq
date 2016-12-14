@@ -471,10 +471,15 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 	return u.String(), listUrl.String()
 }
 
+type metaInfo struct {
+	PartitionNum int `json:"partition_num"`
+	Replica      int `json:"replica"`
+}
 type lookupResp struct {
 	Channels   []string             `json:"channels"`
 	Producers  []*peerInfo          `json:"producers"`
 	Partitions map[string]*peerInfo `json:"partitions"`
+	Meta       metaInfo             `json:"meta"`
 }
 
 type NsqLookupdNodeInfo struct {
