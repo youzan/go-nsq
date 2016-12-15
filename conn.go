@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,9 +60,10 @@ type Conn struct {
 
 	config *Config
 
-	conn    *net.TCPConn
-	tlsConn *tls.Conn
-	addr    string
+	conn        *net.TCPConn
+	tlsConn     *tls.Conn
+	addr        string
+	consumePart string
 
 	delegate ConnDelegate
 
@@ -235,6 +237,14 @@ func (c *Conn) RemoteAddr() net.Addr {
 // String returns the fully-qualified address
 func (c *Conn) String() string {
 	return c.addr
+}
+
+func (c *Conn) GetConnUID() string {
+	if c.consumePart == "" {
+		return c.addr
+	}
+	pstr, _ := strconv.Atoi(c.consumePart)
+	return getConnectionUID(c.addr, pstr)
 }
 
 // Read performs a deadlined read on the underlying TCP connection

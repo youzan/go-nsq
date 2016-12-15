@@ -475,6 +475,7 @@ type metaInfo struct {
 	PartitionNum int `json:"partition_num"`
 	Replica      int `json:"replica"`
 }
+
 type lookupResp struct {
 	Channels   []string             `json:"channels"`
 	Producers  []*peerInfo          `json:"producers"`
@@ -505,6 +506,10 @@ type peerInfo struct {
 	Version          string `json:"version"`
 }
 
+func getConnectionUID(addr string, pid int) string {
+	return addr + "-" + strconv.Itoa(pid)
+}
+
 // make an HTTP req to one of the configured nsqlookupd instances to discover
 // which nsqd's provide the topic we are consuming.
 //
@@ -533,7 +538,8 @@ func (r *Consumer) queryLookupd() {
 	}
 
 	var nsqdAddrs []string
-	partInfo := make(map[string]int, len(data.Partitions))
+	partInfo := make(map[string]map[int]struct{})
+	r.log(LogLevelInfo, "producer partitions: %v", len(data.Partitions))
 
 	for pidStr, partProducer := range data.Partitions {
 		pid, err := strconv.Atoi(pidStr)
@@ -545,7 +551,12 @@ func (r *Consumer) queryLookupd() {
 		port := partProducer.TCPPort
 		nsqdAddr := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
 		nsqdAddrs = append(nsqdAddrs, nsqdAddr)
-		partInfo[nsqdAddr] = pid
+		nodeParts, ok := partInfo[nsqdAddr]
+		if !ok {
+			nodeParts = make(map[int]struct{})
+			partInfo[nsqdAddr] = nodeParts
+		}
+		nodeParts[pid] = struct{}{}
 		r.log(LogLevelDebug, "producer found %s , partition: %v", nsqdAddr, pid)
 	}
 
@@ -565,14 +576,22 @@ func (r *Consumer) queryLookupd() {
 		nsqdAddrs = discoveryFilter.Filter(nsqdAddrs)
 	}
 	for _, addr := range nsqdAddrs {
-		pid, ok := partInfo[addr]
+		pidList, ok := partInfo[addr]
 		if !ok {
-			pid = -1
-		}
-		err = r.ConnectToNSQD(addr, pid)
-		if err != nil && err != ErrAlreadyConnected {
-			r.log(LogLevelError, "(%s) error connecting to nsqd - %s", addr, err)
-			continue
+			pid := -1
+			err = r.ConnectToNSQD(addr, pid)
+			if err != nil && err != ErrAlreadyConnected {
+				r.log(LogLevelError, "(%s) error connecting to nsqd - %s", addr, err)
+				continue
+			}
+		} else {
+			for pid, _ := range pidList {
+				err = r.ConnectToNSQD(addr, pid)
+				if err != nil && err != ErrAlreadyConnected {
+					r.log(LogLevelError, "(%s) error connecting to nsqd - %s", addr, err)
+					continue
+				}
+			}
 		}
 	}
 }
@@ -614,6 +633,7 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	logger, logLvl := r.getLogger()
 
 	conn := NewConn(addr, &r.config, &consumerConnDelegate{r})
+	conn.consumePart = strconv.Itoa(part)
 	conn.SetLogger(logger, logLvl,
 		fmt.Sprintf("%3d [%s(%v)/%s] (%%s)", r.id, r.topic, part, r.channel))
 
@@ -621,14 +641,15 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	// here we assume only partition for each topic on node
 	// if more than one partitions, in order to consume all partitions,
 	// we need more connections to the same node
-	_, pendingOk := r.pendingConnections[addr]
-	_, ok := r.connections[addr]
+	cid := conn.GetConnUID()
+	_, pendingOk := r.pendingConnections[cid]
+	_, ok := r.connections[cid]
 	if ok || pendingOk {
 		r.mtx.Unlock()
 		return ErrAlreadyConnected
 	}
-	r.pendingConnections[addr] = conn
-	if idx := indexOfAddrPartInfo(addr, r.nsqdTCPAddrs); idx == -1 {
+	r.pendingConnections[cid] = conn
+	if idx := indexOfAddrPartInfo(addr, conn.consumePart, r.nsqdTCPAddrs); idx == -1 {
 		r.nsqdTCPAddrs = append(r.nsqdTCPAddrs, AddrPartInfo{addr, part})
 	}
 	r.mtx.Unlock()
@@ -638,9 +659,9 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 
 	cleanupConnection := func() {
 		r.mtx.Lock()
-		delete(r.pendingConnections, addr)
+		delete(r.pendingConnections, cid)
 		r.mtx.Unlock()
-		r.log(LogLevelInfo, "consumer cleanup connection: (%s) ", addr)
+		r.log(LogLevelInfo, "consumer cleanup connection: (%s) ", cid)
 		conn.Close()
 	}
 
@@ -700,8 +721,8 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	}
 
 	r.mtx.Lock()
-	delete(r.pendingConnections, addr)
-	r.connections[addr] = conn
+	delete(r.pendingConnections, cid)
+	r.connections[cid] = conn
 	r.mtx.Unlock()
 
 	// pre-emptive signal to existing connections to lower their RDY count
@@ -712,9 +733,9 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	return nil
 }
 
-func indexOfAddrPartInfo(n string, h []AddrPartInfo) int {
+func indexOfAddrPartInfo(n string, pid string, h []AddrPartInfo) int {
 	for i, a := range h {
-		if n == a.addr {
+		if n == a.addr && pid == strconv.Itoa(a.pid) {
 			return i
 		}
 	}
@@ -732,11 +753,11 @@ func indexOf(n string, h []string) int {
 
 // DisconnectFromNSQD closes the connection to and removes the specified
 // `nsqd` address from the list
-func (r *Consumer) DisconnectFromNSQD(addr string) error {
+func (r *Consumer) DisconnectFromNSQD(addr string, part string) error {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
 
-	idx := indexOfAddrPartInfo(addr, r.nsqdTCPAddrs)
+	idx := indexOfAddrPartInfo(addr, part, r.nsqdTCPAddrs)
 	if idx == -1 {
 		return ErrNotConnected
 	}
@@ -828,7 +849,7 @@ func (r *Consumer) onConnError(c *Conn, data []byte) {
 	if IsFailedOnNotLeaderBytes(data) || IsTopicNotExistBytes(data) || IsFailedOnNotWritableBytes(data) {
 		addr := c.RemoteAddr()
 		r.log(LogLevelInfo, "removing nsqd address %v for error: %v", addr, string(data))
-		r.DisconnectFromNSQD(addr.String())
+		r.DisconnectFromNSQD(addr.String(), c.consumePart)
 		go func() {
 			time.Sleep(time.Second)
 			select {
@@ -854,16 +875,16 @@ func (r *Consumer) onConnClose(c *Conn) {
 	atomic.AddInt64(&r.totalRdyCount, -rdyCount)
 
 	r.rdyRetryMtx.Lock()
-	if timer, ok := r.rdyRetryTimers[c.String()]; ok {
+	if timer, ok := r.rdyRetryTimers[c.GetConnUID()]; ok {
 		// stop any pending retry of an old RDY update
 		timer.Stop()
-		delete(r.rdyRetryTimers, c.String())
+		delete(r.rdyRetryTimers, c.GetConnUID())
 		hasRDYRetryTimer = true
 	}
 	r.rdyRetryMtx.Unlock()
 
 	r.mtx.Lock()
-	delete(r.connections, c.String())
+	delete(r.connections, c.GetConnUID())
 	left := len(r.connections)
 	r.mtx.Unlock()
 
@@ -889,7 +910,7 @@ func (r *Consumer) onConnClose(c *Conn) {
 
 	r.mtx.RLock()
 	numLookupd := len(r.lookupdHTTPAddrs)
-	reconnect := indexOfAddrPartInfo(c.String(), r.nsqdTCPAddrs) >= 0
+	reconnect := indexOfAddrPartInfo(c.String(), c.consumePart, r.nsqdTCPAddrs) >= 0
 	r.mtx.RUnlock()
 	if numLookupd > 0 {
 		// trigger a poll of the lookupd
@@ -903,7 +924,7 @@ func (r *Consumer) onConnClose(c *Conn) {
 	} else if reconnect {
 		// there are no lookupd and we still have this nsqd TCP address in our list...
 		// try to reconnect after a bit
-		go func(addr string) {
+		go func(addr string, pid string) {
 			for {
 				r.log(LogLevelInfo, "(%s) re-connecting in %s", addr, r.config.LookupdPollInterval)
 				time.Sleep(r.config.LookupdPollInterval)
@@ -911,7 +932,7 @@ func (r *Consumer) onConnClose(c *Conn) {
 					break
 				}
 				r.mtx.RLock()
-				index := indexOfAddrPartInfo(addr, r.nsqdTCPAddrs)
+				index := indexOfAddrPartInfo(addr, pid, r.nsqdTCPAddrs)
 				reconnect := index >= 0
 				var addrInfo AddrPartInfo
 				if index != -1 {
@@ -929,7 +950,7 @@ func (r *Consumer) onConnClose(c *Conn) {
 				}
 				break
 			}
-		}(c.String())
+		}(c.String(), c.consumePart)
 	}
 }
 
@@ -1091,9 +1112,9 @@ func (r *Consumer) updateRDY(c *Conn, count int64) error {
 
 	// stop any pending retry of an old RDY update
 	r.rdyRetryMtx.Lock()
-	if timer, ok := r.rdyRetryTimers[c.String()]; ok {
+	if timer, ok := r.rdyRetryTimers[c.GetConnUID()]; ok {
 		timer.Stop()
-		delete(r.rdyRetryTimers, c.String())
+		delete(r.rdyRetryTimers, c.GetConnUID())
 	}
 	r.rdyRetryMtx.Unlock()
 
@@ -1110,7 +1131,7 @@ func (r *Consumer) updateRDY(c *Conn, count int64) error {
 			// in order to prevent eternal starvation we reschedule this attempt
 			// (if any other RDY update succeeds this timer will be stopped)
 			r.rdyRetryMtx.Lock()
-			r.rdyRetryTimers[c.String()] = time.AfterFunc(5*time.Second,
+			r.rdyRetryTimers[c.GetConnUID()] = time.AfterFunc(5*time.Second,
 				func() {
 					r.updateRDY(c, count)
 				})
