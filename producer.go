@@ -418,13 +418,15 @@ type TopicPartProducerInfo struct {
 	currentIndex  uint32
 	allPartitions []AddrPartInfo
 	meta          metaInfo
+	isMetaValid   bool
 }
 
-func NewTopicPartProducerInfo(meta metaInfo) *TopicPartProducerInfo {
+func NewTopicPartProducerInfo(meta metaInfo, isMetaValid bool) *TopicPartProducerInfo {
 	return &TopicPartProducerInfo{
 		currentIndex:  0,
 		allPartitions: make([]AddrPartInfo, 0, meta.PartitionNum),
 		meta:          meta,
+		isMetaValid:   isMetaValid,
 	}
 }
 
@@ -513,7 +515,7 @@ func NewTopicProducerMgr(topics []string, conf *Config) (*TopicProducerMgr, erro
 		newTopicRspChan:    make(chan int),
 	}
 	for _, t := range topics {
-		mgr.topics[t] = NewTopicPartProducerInfo(metaInfo{})
+		mgr.topics[t] = NewTopicPartProducerInfo(metaInfo{}, false)
 	}
 	return mgr, nil
 }
@@ -612,6 +614,7 @@ func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]s
 		tmpUrl := *u
 		v, _ := url.ParseQuery(tmpUrl.RawQuery)
 		v.Add("topic", newTopic)
+		v.Add("metainfo", "true")
 		v.Add("access", "w")
 		tmpUrl.RawQuery = v.Encode()
 		urlList[newTopic] = tmpUrl.String()
@@ -620,6 +623,7 @@ func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]s
 			tmpUrl := *u
 			v, _ := url.ParseQuery(tmpUrl.RawQuery)
 			v.Add("topic", t)
+			v.Add("metainfo", "true")
 			v.Add("access", "w")
 			tmpUrl.RawQuery = v.Encode()
 			urlList[t] = tmpUrl.String()
@@ -656,7 +660,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		self.topicMtx.Lock()
 		partProducerInfo, ok := self.topics[topicName]
 		if newTopic != "" {
-			partProducerInfo = NewTopicPartProducerInfo(metaInfo{})
+			partProducerInfo = NewTopicPartProducerInfo(metaInfo{}, false)
 			self.topics[topicName] = partProducerInfo
 			ok = true
 		}
@@ -673,10 +677,12 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 			continue
 		}
 
+		isMetaValid := true
 		if data.Meta.PartitionNum <= 0 {
+			isMetaValid = false
 			data.Meta.PartitionNum = len(data.Partitions)
 		}
-		newProducerInfo := NewTopicPartProducerInfo(data.Meta)
+		newProducerInfo := NewTopicPartProducerInfo(data.Meta, isMetaValid)
 		changed := false
 		for partStr, producer := range data.Partitions {
 			partID, err := strconv.Atoi(partStr)
@@ -796,7 +802,7 @@ func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartPro
 				self.log(LogLevelError, "partitionKey can not be nil while using hash pub strategy")
 				return -1, ""
 			}
-			if partProducerInfo.meta.PartitionNum <= 0 {
+			if !partProducerInfo.isMetaValid || partProducerInfo.meta.PartitionNum <= 0 {
 				self.log(LogLevelError, "partition meta info invalid: %v", partProducerInfo.meta)
 				return -1, ""
 			}
@@ -819,7 +825,7 @@ func (self *TopicProducerMgr) removeProducerForTopic(topic string, pid int, addr
 	self.topicMtx.Lock()
 	v, ok := self.topics[topic]
 	if ok {
-		newInfo := NewTopicPartProducerInfo(v.meta)
+		newInfo := NewTopicPartProducerInfo(v.meta, v.isMetaValid)
 		newInfo.currentIndex = v.currentIndex
 		for _, p := range v.allPartitions {
 			newInfo.allPartitions = append(newInfo.allPartitions, p)
@@ -843,7 +849,7 @@ func (self *TopicProducerMgr) removeProducer(addr string) {
 	self.log(LogLevelInfo, "removing producer %v ", addr)
 	self.topicMtx.Lock()
 	for topic, v := range self.topics {
-		newInfo := NewTopicPartProducerInfo(v.meta)
+		newInfo := NewTopicPartProducerInfo(v.meta, v.isMetaValid)
 		newInfo.currentIndex = v.currentIndex
 		for _, p := range v.allPartitions {
 			newInfo.allPartitions = append(newInfo.allPartitions, p)
