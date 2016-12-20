@@ -302,6 +302,7 @@ func (c *Conn) identify() (*IdentifyResponse, error) {
 	ci["deflate"] = c.config.Deflate
 	ci["deflate_level"] = c.config.DeflateLevel
 	ci["snappy"] = c.config.Snappy
+	ci["multiplexing"] = c.config.EnableMultiplexing
 	ci["feature_negotiation"] = true
 	if c.config.HeartbeatInterval == -1 {
 		ci["heartbeat_interval"] = -1

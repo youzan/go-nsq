@@ -179,10 +179,11 @@ type Config struct {
 	// secret for nsqd authentication (requires nsqd 0.2.29+)
 	AuthSecret string `opt:"auth_secret"`
 
-	EnableTrace   bool `opt:"enable_trace"`
-	EnableOrdered bool `opt:"enable_ordered"`
-	Hasher        hash.Hash32
-	PubStrategy   PubStrategyType
+	EnableTrace        bool `opt:"enable_trace"`
+	EnableOrdered      bool `opt:"enable_ordered"`
+	Hasher             hash.Hash32
+	PubStrategy        PubStrategyType
+	EnableMultiplexing bool
 }
 
 // NewConfig returns a new default nsq configuration.
@@ -345,7 +346,7 @@ func (h *structTagsConfig) SetDefaults(c *Config) error {
 		log.Fatalf("ERROR: unable to get hostname %s", err.Error())
 	}
 
-	c.ClientID = strings.Split(hostname, ".")[0]
+	c.ClientID = strconv.Itoa(os.Getpid())
 	c.Hostname = hostname
 	c.UserAgent = fmt.Sprintf("go-nsq/%s", VERSION)
 	return nil
