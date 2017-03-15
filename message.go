@@ -11,6 +11,8 @@ import (
 // The number of bytes for a Message.ID
 const MsgIDLength = 16
 
+type FullMessageID [MsgIDLength]byte
+
 // MessageID is the binary bytes message ID
 type MessageID [MsgIDLength]byte
 
@@ -53,6 +55,17 @@ func NewMessage(id MessageID, body []byte) *Message {
 		Body:      body,
 		Timestamp: time.Now().UnixNano(),
 	}
+}
+
+func (m *Message) GetTraceID() uint64 {
+	if len(m.ID) < 16 {
+		return 0
+	}
+	return binary.BigEndian.Uint64(m.ID[8:16])
+}
+
+func (m *Message) GetFullMsgID() FullMessageID {
+	return FullMessageID(m.ID)
 }
 
 // DisableAutoResponse disables the automatic response that
