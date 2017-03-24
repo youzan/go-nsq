@@ -758,13 +758,6 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 					delete(self.removingProducers, k)
 				}
 			}
-			for k, p := range self.removingProducers {
-				if time.Since(p.ts) > time.Minute*10 {
-					self.log(LogLevelInfo, "removing producer %v for topic %v stopped", p.producer.addr, topicName)
-					delete(self.removingProducers, k)
-					cleanProducers[k] = p.producer
-				}
-			}
 		}
 		if changed {
 			for partID, addrInfo := range newProducerInfo.allPartitions {
@@ -780,8 +773,17 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 						self.producers[addr] = newProd
 					}
 				}
+				delete(self.removingProducers, addr)
 			}
 		}
+		for k, p := range self.removingProducers {
+			if time.Since(p.ts) > time.Minute*10 {
+				self.log(LogLevelInfo, "removing producer %v for topic %v stopped", p.producer.addr, topicName)
+				delete(self.removingProducers, k)
+				cleanProducers[k] = p.producer
+			}
+		}
+
 		self.producerMtx.Unlock()
 		for _, p := range cleanProducers {
 			p.Stop()
