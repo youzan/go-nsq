@@ -759,7 +759,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 				}
 			}
 			for k, p := range self.removingProducers {
-				if time.Since(p.ts) > time.Minute*30 {
+				if time.Since(p.ts) > time.Minute*10 {
 					self.log(LogLevelInfo, "removing producer %v for topic %v stopped", p.producer.addr, topicName)
 					delete(self.removingProducers, k)
 					cleanProducers[k] = p.producer
