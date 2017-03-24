@@ -472,6 +472,11 @@ func (self *TopicPartProducerInfo) getSpecificPartitionInfo(pid int) AddrPartInf
 	return AddrPartInfo{}
 }
 
+type RemoveProducerInfo struct {
+	producer *Producer
+	ts       time.Time
+}
+
 type TopicProducerMgr struct {
 	pubStrategy        PubStrategyType
 	producerMtx        sync.RWMutex
@@ -479,6 +484,7 @@ type TopicProducerMgr struct {
 	hashMtx            sync.Mutex
 	topics             map[string]*TopicPartProducerInfo
 	producers          map[string]*Producer
+	removingProducers  map[string]*RemoveProducerInfo
 	config             Config
 	etcdServers        []string
 	etcdClusterID      string
@@ -508,6 +514,7 @@ func NewTopicProducerMgr(topics []string, conf *Config) (*TopicProducerMgr, erro
 		topics:             make(map[string]*TopicPartProducerInfo, len(topics)),
 		pubStrategy:        conf.PubStrategy,
 		producers:          make(map[string]*Producer),
+		removingProducers:  make(map[string]*RemoveProducerInfo),
 		config:             *conf,
 		lookupdRecheckChan: make(chan int),
 		exitChan:           make(chan int),
@@ -525,6 +532,9 @@ func (self *TopicProducerMgr) Stop() {
 	self.producerMtx.RLock()
 	for _, p := range self.producers {
 		p.Stop()
+	}
+	for _, p := range self.removingProducers {
+		p.producer.Stop()
 	}
 	self.producerMtx.RUnlock()
 	self.wg.Wait()
@@ -725,26 +735,57 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 				}
 			}
 		}
-		if !changed {
-			continue
-		}
 
+		cleanProducers := make(map[string]*Producer)
 		self.producerMtx.Lock()
-		for partID, addrInfo := range newProducerInfo.allPartitions {
-			addr := addrInfo.addr
-			_, ok := self.producers[addr]
-			if !ok {
-				self.log(LogLevelInfo, "init new producer %v for topic %v-%v", addr, topicName, partID)
-				newProd, err := NewProducer(addr, &self.config)
-				if err != nil {
-					self.log(LogLevelError, "producer %v init failed: %v", addr, err)
+		if len(newProducerInfo.allPartitions) > 0 {
+			for k, p := range self.producers {
+				found := false
+				for _, addrInfo := range newProducerInfo.allPartitions {
+					if p.addr == addrInfo.addr {
+						found = true
+						break
+					}
+				}
+				if !found {
+					self.log(LogLevelInfo, "mark producer %v for topic %v removing since not in lookup", p.addr, topicName)
+					delete(self.producers, k)
+					if _, ok := self.removingProducers[k]; ok {
+						continue
+					}
+					self.removingProducers[k] = &RemoveProducerInfo{producer: p, ts: time.Now()}
 				} else {
-					newProd.SetLogger(self.getLogger())
-					self.producers[addr] = newProd
+					delete(self.removingProducers, k)
+				}
+			}
+			for k, p := range self.removingProducers {
+				if time.Since(p.ts) > time.Minute*30 {
+					self.log(LogLevelInfo, "removing producer %v for topic %v stopped", p.producer.addr, topicName)
+					delete(self.removingProducers, k)
+					cleanProducers[k] = p.producer
+				}
+			}
+		}
+		if changed {
+			for partID, addrInfo := range newProducerInfo.allPartitions {
+				addr := addrInfo.addr
+				_, ok := self.producers[addr]
+				if !ok {
+					self.log(LogLevelInfo, "init new producer %v for topic %v-%v", addr, topicName, partID)
+					newProd, err := NewProducer(addr, &self.config)
+					if err != nil {
+						self.log(LogLevelError, "producer %v init failed: %v", addr, err)
+					} else {
+						newProd.SetLogger(self.getLogger())
+						self.producers[addr] = newProd
+					}
 				}
 			}
 		}
 		self.producerMtx.Unlock()
+		for _, p := range cleanProducers {
+			p.Stop()
+		}
 
 		self.topicMtx.Lock()
 		self.topics[topicName] = newProducerInfo
@@ -868,6 +909,7 @@ func (self *TopicProducerMgr) removeProducer(addr string) {
 	if ok {
 		delete(self.producers, addr)
 	}
+	delete(self.removingProducers, addr)
 	self.producerMtx.Unlock()
 	if ok {
 		producer.Stop()
@@ -918,7 +960,11 @@ func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*P
 	producer, ok := self.producers[addr]
 	self.producerMtx.RUnlock()
 	if !ok {
-		return nil, pid, ErrNoProducer
+		removed, ok := self.removingProducers[addr]
+		if !ok {
+			return nil, pid, ErrNoProducer
+		}
+		producer = removed.producer
 	}
 	return producer, pid, nil
 }
