@@ -764,6 +764,9 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 				addr := addrInfo.addr
 				_, ok := self.producers[addr]
 				if !ok {
+					if addr == "" {
+						continue
+					}
 					self.log(LogLevelInfo, "init new producer %v for topic %v-%v", addr, topicName, partID)
 					newProd, err := NewProducer(addr, &self.config)
 					if err != nil {
