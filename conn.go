@@ -249,13 +249,17 @@ func (c *Conn) GetConnUID() string {
 
 // Read performs a deadlined read on the underlying TCP connection
 func (c *Conn) Read(p []byte) (int, error) {
-	c.conn.SetReadDeadline(time.Now().Add(c.config.ReadTimeout))
+	if c.config.ReadTimeout > 0 {
+		c.conn.SetReadDeadline(time.Now().Add(c.config.ReadTimeout))
+	}
 	return c.r.Read(p)
 }
 
 // Write performs a deadlined write on the underlying TCP connection
 func (c *Conn) Write(p []byte) (int, error) {
-	c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout))
+	if c.config.WriteTimeout > 0 {
+		c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout))
+	}
 	return c.w.Write(p)
 }
 

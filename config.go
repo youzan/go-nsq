@@ -96,8 +96,8 @@ type Config struct {
 	DialTimeout time.Duration `opt:"dial_timeout" default:"5s"`
 
 	// Deadlines for network reads and writes
-	ReadTimeout  time.Duration `opt:"read_timeout" min:"100ms" max:"5m" default:"60s"`
-	WriteTimeout time.Duration `opt:"write_timeout" min:"100ms" max:"5m" default:"1s"`
+	ReadTimeout  time.Duration `opt:"read_timeout" max:"5m" default:"60s"`
+	WriteTimeout time.Duration `opt:"write_timeout" max:"5m" default:"1s"`
 
 	// LocalAddr is the local address to use when dialing an nsqd.
 	// If empty, a local address is automatically chosen.
