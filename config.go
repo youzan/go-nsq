@@ -383,7 +383,7 @@ func (h *structTagsConfig) Validate(c *Config) error {
 		}
 	}
 
-	if c.HeartbeatInterval > c.ReadTimeout {
+	if c.ReadTimeout > 0 && c.HeartbeatInterval > c.ReadTimeout {
 		return fmt.Errorf("HeartbeatInterval %v must be less than ReadTimeout %v", c.HeartbeatInterval, c.ReadTimeout)
 	}
 
