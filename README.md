@@ -1,6 +1,6 @@
 ## go-nsq
 
-[![Build Status](https://secure.travis-ci.org/nsqio/go-nsq.svg?branch=master)][travis] [![GoDoc](https://godoc.org/github.com/nsqio/go-nsq?status.svg)](https://godoc.org/github.com/nsqio/go-nsq) [![GitHub release](https://img.shields.io/github/release/nsqio/go-nsq.svg)](https://github.com/nsqio/go-nsq/releases/latest)
+[![Build Status](https://travis-ci.org/absolute8511/go-nsq.svg?branch=master)][travis] [![GoDoc](https://godoc.org/github.com/absolute8511/go-nsq?status.svg)](https://godoc.org/github.com/absolute8511/go-nsq) [![GitHub release](https://img.shields.io/github/release/absolute8511/go-nsq.svg)](https://github.com/absolute8511/go-nsq/releases/latest)
 
 The official Go package for [NSQ][nsq].
 
@@ -13,7 +13,7 @@ using this package.
 
 Tests are run via `./test.sh` (which requires `nsqd` and `nsqlookupd` to be installed).
 
-[nsq]: https://github.com/nsqio/nsq
-[nsq_gopkgdoc]: http://godoc.org/github.com/nsqio/go-nsq
-[apps]: https://github.com/nsqio/nsq/tree/master/apps
-[travis]: http://travis-ci.org/nsqio/go-nsq
+[nsq]: https://github.com/absolute8511/nsq
+[nsq_gopkgdoc]: http://godoc.org/github.com/absolute8511/go-nsq
+[apps]: https://github.com/absolute8511/nsq/tree/master/apps
+[travis]: http://travis-ci.org/absolute8511/go-nsq
