@@ -171,7 +171,7 @@ type Config struct {
 	OutputBufferTimeout time.Duration `opt:"output_buffer_timeout" default:"250ms"`
 
 	// Maximum number of messages to allow in flight (concurrency knob)
-	MaxInFlight int `opt:"max_in_flight" min:"0" default:"1"`
+	MaxInFlight int `opt:"max_in_flight" min:"0" default:"20"`
 
 	// The server-side message timeout for messages delivered to this client
 	MsgTimeout time.Duration `opt:"msg_timeout" min:"0"`
