@@ -410,7 +410,7 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 			defer wg.Done()
 			err := w.MultiPublish(tname, testData)
 			if err != nil {
-				t.Fatal("error pub %s", err)
+				t.Fatal("error pub :", err)
 			}
 
 			go func() {

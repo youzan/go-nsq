@@ -16,9 +16,9 @@ fi
 LOOKUP_LOGFILE="./lookup.log"
 echo "starting nsqlookupd"
 echo "  logging to $LOOKUP_LOGFILE"
-nsqlookupd --alsologtostderr=true --log-level=2 >$LOOKUP_LOGFILE 2>&1 &
+nsqlookupd --alsologtostderr=true --log-level=3 >$LOOKUP_LOGFILE 2>&1 &
 LOOKUPD_PID=$!
-sleep 5
+sleep 10
 
 DATAPATH=$(mktemp -d -t nsqXXXXXX)
 echo $DATAPATH
@@ -32,6 +32,7 @@ nsqd --sync-timeout=100ms --broadcast-address=127.0.0.1 --alsologtostderr=true -
 NSQD_PID=$!
 
 sleep 10
+tail -f $LOOKUP_LOGFILE &
 
 cleanup() {
     echo "killing nsqd PID $NSQD_PID"
