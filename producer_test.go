@@ -39,6 +39,33 @@ func (h *ConsumerHandler) HandleMessage(message *Message) error {
 	return nil
 }
 
+func ensureInitChannel(t *testing.T, topicName string, useLookup bool) {
+	config := NewConfig()
+	config.DefaultRequeueDelay = 0
+	config.MaxBackoffDuration = 50 * time.Millisecond
+	q, _ := NewConsumer(topicName, "ch", config)
+	q.SetLogger(nullLogger, LogLevelInfo)
+
+	h := &ConsumerHandler{
+		t: t,
+		q: q,
+	}
+	q.AddHandler(h)
+
+	if useLookup {
+		err := q.ConnectToNSQLookupd("127.0.0.1:4161")
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
+	} else {
+		err := q.ConnectToNSQD("127.0.0.1:4150", 0)
+		if err != nil {
+			t.Errorf("init error: %v", err.Error())
+		}
+	}
+	q.Stop()
+}
+
 func TestProducerConnection(t *testing.T) {
 	config := NewConfig()
 	laddr := "127.0.0.1"
@@ -46,6 +73,7 @@ func TestProducerConnection(t *testing.T) {
 	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
 
 	EnsureTopic(t, 4150, "write_test", 0)
+	ensureInitChannel(t, "write_test", false)
 	w, _ := NewProducer("127.0.0.1:4150", config)
 	w.SetLogger(nullLogger, LogLevelInfo)
 
@@ -88,6 +116,7 @@ func TestProducerPublish(t *testing.T) {
 	topicName := "publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
 	EnsureTopic(t, 4150, topicName, 0)
+	ensureInitChannel(t, topicName, false)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -114,6 +143,7 @@ func TestProducerMultiPublish(t *testing.T) {
 	msgCount := 10
 
 	EnsureTopic(t, 4150, topicName, 0)
+	ensureInitChannel(t, topicName, false)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -143,6 +173,7 @@ func TestProducerPublishAsync(t *testing.T) {
 	msgCount := 10
 
 	EnsureTopic(t, 4150, topicName, 0)
+	ensureInitChannel(t, topicName, false)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -180,6 +211,7 @@ func TestProducerMultiPublishAsync(t *testing.T) {
 	msgCount := 10
 
 	EnsureTopic(t, 4150, topicName, 0)
+	ensureInitChannel(t, topicName, false)
 
 	config := NewConfig()
 	w, _ := NewProducer("127.0.0.1:4150", config)
@@ -220,6 +252,7 @@ func TestProducerHeartbeat(t *testing.T) {
 	topicName := "heartbeat" + strconv.Itoa(int(time.Now().Unix()))
 
 	EnsureTopic(t, 4150, topicName, 0)
+	ensureInitChannel(t, topicName, false)
 
 	config := NewConfig()
 	config.HeartbeatInterval = 100 * time.Millisecond
@@ -290,11 +323,15 @@ func TestTopicProducerMgrGetNextProducer(t *testing.T) {
 
 	// wait nsqd report to lookupd
 	time.Sleep(time.Second * 3)
+	for i := 0; i < 3; i++ {
+		ensureInitChannel(t, "t"+strconv.Itoa(i)+topicName, true)
+	}
 
 	config := NewConfig()
 	initTopics := make([]string, 0)
 	initTopics = topicList
-	w, err := NewTopicProducerMgr(initTopics, PubRR, config)
+	config.PubStrategy = PubRR
+	w, err := NewTopicProducerMgr(initTopics, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,15 +347,15 @@ func TestTopicProducerMgrGetNextProducer(t *testing.T) {
 	}
 
 	for _, tn := range topicList {
-		_, pid, err := w.getProducer(tn)
+		_, pid, err := w.getProducer(tn, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, pid2, err := w.getProducer(tn)
+		_, pid2, err := w.getProducer(tn, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, pid3, err := w.getProducer(tn)
+		_, pid3, err := w.getProducer(tn, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -335,6 +372,7 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 	for i := 0; i < 3; i++ {
 		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
 		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 0)
+		ensureInitChannel(t, "t"+strconv.Itoa(i)+topicName, false)
 	}
 
 	// wait nsqd report to lookupd
@@ -345,7 +383,11 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 	if !dynamic {
 		initTopics = topicList
 	}
-	w, err := NewTopicProducerMgr(initTopics, PubRR, config)
+	config.PubStrategy = PubRR
+	config.DialTimeout = time.Second
+	config.ReadTimeout = time.Second * 6
+	config.HeartbeatInterval = time.Second * 3
+	w, err := NewTopicProducerMgr(initTopics, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,14 +410,14 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 			defer wg.Done()
 			err := w.MultiPublish(tname, testData)
 			if err != nil {
-				t.Fatalf("error %s", err)
+				t.Fatal("error pub %s", err)
 			}
 
 			go func() {
 				time.Sleep(time.Second)
 				err = w.Publish(tname, []byte("bad_test_case"))
 				if err != nil {
-					t.Fatalf("error %s", err)
+					t.Errorf("error pub %s", err)
 				}
 			}()
 
@@ -392,18 +434,18 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 			responseChan := make(chan *ProducerTransaction)
 			err := w.MultiPublishAsync(tname, testData, responseChan, tname, 1)
 			if err != nil {
-				t.Fatalf(err.Error())
+				t.Fatal(err.Error())
 			}
 
 			trans := <-responseChan
 			if trans.Error != nil {
-				t.Fatalf(trans.Error.Error())
+				t.Error(trans.Error.Error())
 			}
 			if trans.Args[0].(string) != tname {
-				t.Fatalf(`proxied arg "%s" != "%s"`, trans.Args[0].(string), tname)
+				t.Errorf(`proxied arg "%s" != "%s"`, trans.Args[0].(string), tname)
 			}
 			if trans.Args[1].(int) != 1 {
-				t.Fatalf(`proxied arg %d != 1`, trans.Args[1].(int))
+				t.Errorf(`proxied arg %d != 1`, trans.Args[1].(int))
 			}
 			go func() {
 				time.Sleep(time.Second)
@@ -478,7 +520,12 @@ func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) 
 			t.Fatalf(err.Error())
 		}
 	}
-	<-q.StopChan
+	select {
+	case <-q.StopChan:
+	case <-time.After(time.Second * 10):
+		t.Errorf("timeout for consume")
+		q.Stop()
+	}
 
 	if h.messagesGood != msgCount {
 		t.Fatalf("end of test. should have handled a diff number of messages %d != %d", h.messagesGood, msgCount)

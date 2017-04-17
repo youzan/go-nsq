@@ -206,10 +206,6 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	q.AddHandler(h)
 
 	EnsureTopic(t, 4150, topicName, 0)
-	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
-	SendMessage(t, 4151, topicName, "mpub", []byte("{\"msg\":\"double\"}\n{\"msg\":\"double\"}"))
-	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
-	h.messagesSent = 4
 
 	addr := "127.0.0.1:4150"
 	err := q.ConnectToNSQD(addr, 2)
@@ -225,6 +221,10 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendMessage(t, 4151, topicName, "mpub", []byte("{\"msg\":\"double\"}\n{\"msg\":\"double\"}"))
+	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
+	h.messagesSent = 4
 
 	stats := q.Stats()
 	if stats.Connections == 0 {
@@ -241,7 +241,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 		t.Fatal("connection should be bound to the specified address:", conn.conn.LocalAddr())
 	}
 
-	err = q.DisconnectFromNSQD("1.2.3.4:4150")
+	err = q.DisconnectFromNSQD("1.2.3.4:4150", "0")
 	if err == nil {
 		t.Fatal("should not be able to disconnect from an unknown nsqd")
 	}
@@ -251,12 +251,17 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 		t.Fatal("should not be able to connect to non-existent nsqd")
 	}
 
-	err = q.DisconnectFromNSQD("1.2.3.4:4150")
+	err = q.DisconnectFromNSQD("1.2.3.4:4150", "0")
 	if err != nil {
 		t.Fatal("should be able to disconnect from an nsqd - " + err.Error())
 	}
 
-	<-q.StopChan
+	select {
+	case <-q.StopChan:
+	case <-time.After(time.Second * 10):
+		t.Errorf("should stop after timeout")
+		q.Stop()
+	}
 
 	stats = q.Stats()
 	if stats.Connections != 0 {
