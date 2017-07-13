@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync/atomic"
 	"time"
+	"fmt"
 )
 
 // The number of bytes for a Message.ID
@@ -45,6 +46,9 @@ type Message struct {
 	responded            int32
 	Offset               uint64
 	RawSize              uint32
+
+	ExtVer	uint8
+	ExtContext []byte
 }
 
 // NewMessage creates a Message, initializes some metadata,
@@ -177,5 +181,34 @@ func DecodeMessage(b []byte) (*Message, error) {
 
 	copy(msg.ID[:], b[10:10+MsgIDLength])
 	msg.Body = b[10+MsgIDLength:]
+	return &msg, nil
+}
+
+// DecodeMessage deseralizes data (as []byte) and creates a new Message
+func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
+	if len(b) < 10+MsgIDLength {
+		return nil, errors.New("not enough data to decode valid message")
+	}
+	var msg Message
+	msg.Timestamp = int64(binary.BigEndian.Uint64(b[:8]))
+	msg.Attempts = binary.BigEndian.Uint16(b[8:10])
+
+	copy(msg.ID[:], b[10:10+MsgIDLength])
+	bodyStart := 10 + MsgIDLength
+	if ext {
+		msg.ExtVer = uint8(b[10+MsgIDLength])
+		switch msg.ExtVer {
+		case 0x2:
+			extLen :=  binary.BigEndian.Uint16(b[10 + MsgIDLength + 1 : 10 + MsgIDLength + 3])
+			msg.ExtContext = b[10 + MsgIDLength + 3 : 10 + MsgIDLength + 3 + extLen]
+			bodyStart = 10 + MsgIDLength + 3 + int(extLen)
+		case 0x0:
+			bodyStart = 10 + MsgIDLength + 1
+		default:
+			return nil, fmt.Errorf("ext version not recognised %v", msg.ExtVer)
+		}
+	}
+
+	msg.Body = b[bodyStart:]
 	return &msg, nil
 }

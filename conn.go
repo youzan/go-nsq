@@ -64,6 +64,7 @@ type Conn struct {
 	tlsConn     *tls.Conn
 	addr        string
 	consumePart string
+	ext	    bool
 
 	delegate ConnDelegate
 
@@ -321,6 +322,8 @@ func (c *Conn) identify() (*IdentifyResponse, error) {
 		ci["output_buffer_timeout"] = int64(c.config.OutputBufferTimeout / time.Millisecond)
 	}
 	ci["msg_timeout"] = int64(c.config.MsgTimeout / time.Millisecond)
+	ci["desired_tag"] = c.config.DesiredTag
+
 	cmd, err := Identify(ci)
 	if err != nil {
 		return nil, ErrIdentify{err.Error()}
@@ -518,7 +521,7 @@ func (c *Conn) readLoop() {
 		case FrameTypeResponse:
 			c.delegate.OnResponse(c, data)
 		case FrameTypeMessage:
-			msg, err := DecodeMessage(data)
+			msg, err := DecodeMessageWithExt(data, c.ext)
 			if err != nil {
 				c.log(LogLevelError, "IO error - %s", err)
 				c.delegate.OnIOError(c, err)

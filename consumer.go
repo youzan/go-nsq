@@ -463,6 +463,7 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 
 	v, err := url.ParseQuery(u.RawQuery)
 	v.Add("topic", r.topic)
+	v.Add("metainfo", "true")
 	v.Add("access", "r")
 	if r.partition >= 0 {
 		v.Add("partition", strconv.Itoa(r.partition))
@@ -474,6 +475,7 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 type metaInfo struct {
 	PartitionNum int `json:"partition_num"`
 	Replica      int `json:"replica"`
+	ExtendSupport bool `json:"extend_support"`
 }
 
 type lookupResp struct {
@@ -586,7 +588,7 @@ func (r *Consumer) queryLookupd() {
 			}
 		} else {
 			for pid, _ := range pidList {
-				err = r.ConnectToNSQD(addr, pid)
+				err = r.ConnectToNSQDWithExt(addr, pid, data.Meta.ExtendSupport)
 				if err != nil && err != ErrAlreadyConnected {
 					r.log(LogLevelError, "(%s) error connecting to nsqd - %s", addr, err)
 					continue
@@ -610,12 +612,7 @@ func (r *Consumer) ConnectToNSQDs(addresses []AddrPartInfo) error {
 	return nil
 }
 
-// ConnectToNSQD takes a nsqd address to connect directly to.
-//
-// It is recommended to use ConnectToNSQLookupd so that topics are discovered
-// automatically.  This method is useful when you want to connect to a single, local,
-// instance.
-func (r *Consumer) ConnectToNSQD(addr string, part int) error {
+func (r *Consumer) ConnectToNSQDWithExt(addr string, part int, ext bool) error {
 	if atomic.LoadInt32(&r.stopFlag) == 1 {
 		return errors.New("consumer stopped")
 	}
@@ -634,6 +631,7 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 
 	conn := NewConn(addr, &r.config, &consumerConnDelegate{r})
 	conn.consumePart = strconv.Itoa(part)
+	conn.ext = ext
 	conn.SetLogger(logger, logLvl,
 		fmt.Sprintf("%3d [%s(%v)/%s] (%%s)", r.id, r.topic, part, r.channel))
 
@@ -731,6 +729,15 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	}
 
 	return nil
+}
+
+// ConnectToNSQD takes a nsqd address to connect directly to.
+//
+// It is recommended to use ConnectToNSQLookupd so that topics are discovered
+// automatically.  This method is useful when you want to connect to a single, local,
+// instance.
+func (r *Consumer) ConnectToNSQD(addr string, part int) error {
+	return r.ConnectToNSQDWithExt(addr, part, false)
 }
 
 func indexOfAddrPartInfo(n string, pid string, h []AddrPartInfo) int {

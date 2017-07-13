@@ -184,6 +184,7 @@ type Config struct {
 	Hasher             hash.Hash32
 	PubStrategy        PubStrategyType
 	EnableMultiplexing bool
+	DesiredTag	   string `opt:"desired_tag"`
 }
 
 // NewConfig returns a new default nsq configuration.
