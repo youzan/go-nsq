@@ -99,6 +99,8 @@ type Consumer struct {
 	backoffCounter   int32
 	maxInFlight      int32
 
+	consume_ext	int32
+
 	mtx sync.RWMutex
 
 	logger   logger
@@ -202,6 +204,18 @@ func NewPartitionConsumer(topic string, part int, channel string, config *Config
 	r.wg.Add(1)
 	go r.rdyLoop()
 	return r, nil
+}
+
+func (r *Consumer) SetConsumeExt(topicExt bool) bool {
+	if topicExt == true {
+		return atomic.CompareAndSwapInt32(&r.consume_ext, 0, 1)
+	} else {
+		return atomic.CompareAndSwapInt32(&r.consume_ext, 1, 0)
+	}
+}
+
+func (r *Consumer) IsConsumeExt() bool {
+	return atomic.LoadInt32(&r.consume_ext) == int32(1)
 }
 
 func (r *Consumer) SetConsumeOffset(partition int, offset ConsumeOffset) error {
@@ -538,6 +552,9 @@ func (r *Consumer) queryLookupd() {
 		r.log(LogLevelError, "error querying nsqlookupd (%s) - %s", endpoint, err)
 		return
 	}
+	if data.Meta.ExtendSupport && !r.IsConsumeExt() {
+		r.SetConsumeExt(true)
+	}
 
 	var nsqdAddrs []string
 	partInfo := make(map[string]map[int]struct{})
@@ -588,7 +605,7 @@ func (r *Consumer) queryLookupd() {
 			}
 		} else {
 			for pid, _ := range pidList {
-				err = r.ConnectToNSQDWithExt(addr, pid, data.Meta.ExtendSupport)
+				err = r.ConnectToNSQD(addr, pid)
 				if err != nil && err != ErrAlreadyConnected {
 					r.log(LogLevelError, "(%s) error connecting to nsqd - %s", addr, err)
 					continue
@@ -612,7 +629,12 @@ func (r *Consumer) ConnectToNSQDs(addresses []AddrPartInfo) error {
 	return nil
 }
 
-func (r *Consumer) ConnectToNSQDWithExt(addr string, part int, ext bool) error {
+// ConnectToNSQD takes a nsqd address to connect directly to.
+//
+// It is recommended to use ConnectToNSQLookupd so that topics are discovered
+// automatically.  This method is useful when you want to connect to a single, local,
+// instance.
+func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	if atomic.LoadInt32(&r.stopFlag) == 1 {
 		return errors.New("consumer stopped")
 	}
@@ -631,7 +653,7 @@ func (r *Consumer) ConnectToNSQDWithExt(addr string, part int, ext bool) error {
 
 	conn := NewConn(addr, &r.config, &consumerConnDelegate{r})
 	conn.consumePart = strconv.Itoa(part)
-	conn.ext = ext
+	conn.ext = r.IsConsumeExt()
 	conn.SetLogger(logger, logLvl,
 		fmt.Sprintf("%3d [%s(%v)/%s] (%%s)", r.id, r.topic, part, r.channel))
 
@@ -729,15 +751,6 @@ func (r *Consumer) ConnectToNSQDWithExt(addr string, part int, ext bool) error {
 	}
 
 	return nil
-}
-
-// ConnectToNSQD takes a nsqd address to connect directly to.
-//
-// It is recommended to use ConnectToNSQLookupd so that topics are discovered
-// automatically.  This method is useful when you want to connect to a single, local,
-// instance.
-func (r *Consumer) ConnectToNSQD(addr string, part int) error {
-	return r.ConnectToNSQDWithExt(addr, part, false)
 }
 
 func indexOfAddrPartInfo(n string, pid string, h []AddrPartInfo) int {

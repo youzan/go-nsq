@@ -6,7 +6,6 @@ import (
 	"io"
 	"sync/atomic"
 	"time"
-	"fmt"
 )
 
 // The number of bytes for a Message.ID
@@ -198,14 +197,12 @@ func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
 	if ext {
 		msg.ExtVer = uint8(b[10+MsgIDLength])
 		switch msg.ExtVer {
-		case 0x2:
-			extLen :=  binary.BigEndian.Uint16(b[10 + MsgIDLength + 1 : 10 + MsgIDLength + 3])
-			msg.ExtContext = b[10 + MsgIDLength + 3 : 10 + MsgIDLength + 3 + extLen]
-			bodyStart = 10 + MsgIDLength + 3 + int(extLen)
 		case 0x0:
 			bodyStart = 10 + MsgIDLength + 1
 		default:
-			return nil, fmt.Errorf("ext version not recognised %v", msg.ExtVer)
+			extLen :=  binary.BigEndian.Uint16(b[10 + MsgIDLength + 1 : 10 + MsgIDLength + 3])
+			msg.ExtContext = b[10 + MsgIDLength + 3 : 10 + MsgIDLength + 3 + extLen]
+			bodyStart = 10 + MsgIDLength + 3 + int(extLen)
 		}
 	}
 
