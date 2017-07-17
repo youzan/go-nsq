@@ -624,6 +624,7 @@ func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup boo
 	config.DefaultRequeueDelay = 0
 	config.MaxBackoffDuration = 50 * time.Millisecond
 	q, _ := NewConsumer(topicName, "ch", config)
+	q.SetConsumeExt(true)
 	//q.SetLogger(log.New(os.Stderr, "", log.LstdFlags), LogLevelInfo)
 	q.SetLogger(nullLogger, LogLevelInfo)
 
@@ -639,7 +640,7 @@ func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup boo
 			t.Fatalf(err.Error())
 		}
 	} else {
-		err := q.ConnectToNSQDWithExt("127.0.0.1:4150", 0, true)
+		err := q.ConnectToNSQD("127.0.0.1:4150", 0)
 		if err != nil {
 			t.Fatalf(err.Error())
 		}
