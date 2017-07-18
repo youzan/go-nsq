@@ -985,6 +985,17 @@ func (self *TopicProducerMgr) PublishAsync(topic string, body []byte, doneChan c
 	}, args)
 }
 
+func (self *TopicProducerMgr) PublishAsyncWithTag(topic string, tag string, body []byte, doneChan chan *ProducerTransaction,
+args ...interface{}) error {
+	return self.doCommandAsyncWithRetry(topic, nil, doneChan, func(pid int) (*Command, error) {
+		if pid < 0 || pid == OLD_VERSION_PID {
+			// pub to old nsqd that not support partition
+			return nil, fmt.Errorf("publish async with tag need partition id")
+		}
+		return PublishWithPartAndTag(topic, strconv.Itoa(pid), tag, body), nil
+	}, args)
+}
+
 func (self *TopicProducerMgr) MultiPublishAsync(topic string, body [][]byte, doneChan chan *ProducerTransaction,
 	args ...interface{}) error {
 	return self.doCommandAsyncWithRetry(topic, nil, doneChan, func(pid int) (*Command, error) {
@@ -1047,6 +1058,17 @@ func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
 	return err
 }
 
+func (self *TopicProducerMgr) PublishWithTag(topic string, tag string, body []byte) error {
+	_, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
+		if pid < 0 || pid == OLD_VERSION_PID {
+			// pub to old nsqd that not support partition, return error
+			return nil, fmt.Errorf("pub with tag need partition id")
+		}
+		return PublishWithPartAndTag(topic, strconv.Itoa(pid), tag, body), nil
+	})
+	return err
+}
+
 func (self *TopicProducerMgr) PublishOrdered(topic string, partitionKey []byte, body []byte) (NewMessageID,
 	uint64, uint32, error) {
 	resp, err := self.doCommandWithRetry(topic, partitionKey, func(pid int) (*Command, error) {
@@ -1069,11 +1091,55 @@ func (self *TopicProducerMgr) PublishOrdered(topic string, partitionKey []byte, 
 	return id, offset, rawSize, err
 }
 
+func (self *TopicProducerMgr) PublishOrderedWithTag(topic string, partitionKey []byte, tag string, body []byte) (NewMessageID,
+uint64, uint32, error) {
+	resp, err := self.doCommandWithRetry(topic, partitionKey, func(pid int) (*Command, error) {
+		if pid < 0 {
+			return nil, errors.New("ordered pub need partition id")
+		}
+		return PublishTraceAndTag(topic, strconv.Itoa(pid), tag, 0, body)
+	})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	// response should be : OK+16 bytes id+8bytes offset+4 bytes size
+	if len(resp) < 2+MsgIDLength+8+4 {
+		self.log(LogLevelError, "trace response invalid: %v", resp)
+		return 0, 0, 0, errors.New("trace response not valid")
+	}
+	id := GetNewMessageID(resp[2 : 2+MsgIDLength])
+	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
+	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
+	return id, offset, rawSize, err
+}
+
 // pub with trace will return the message id and the message offset and size in the queue
 func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body []byte) (NewMessageID,
 	uint64, uint32, error) {
 	resp, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
 		return PublishTrace(topic, strconv.Itoa(pid), traceID, body)
+	})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	// response should be : OK+16 bytes id+8bytes offset+4 bytes size
+	if len(resp) < 2+MsgIDLength+8+4 {
+		self.log(LogLevelError, "trace response invalid: %v", resp)
+		return 0, 0, 0, errors.New("trace response not valid")
+	}
+	id := GetNewMessageID(resp[2 : 2+MsgIDLength])
+	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
+	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
+	return id, offset, rawSize, err
+}
+
+func (self *TopicProducerMgr) PublishAndTraceAndTag(topic string, traceID uint64, tag string, body []byte) (NewMessageID,
+uint64, uint32, error) {
+	resp, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
+		if pid < 0 {
+			return nil, errors.New("pub with tag need partition id")
+		}
+		return PublishTraceAndTag(topic, strconv.Itoa(pid), tag, traceID, body)
 	})
 	if err != nil {
 		return 0, 0, 0, err

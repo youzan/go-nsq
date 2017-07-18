@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"net/url"
 )
 
 type MyTestHandler struct {
@@ -23,6 +24,54 @@ type MyTestHandler struct {
 	messagesSent     int
 	messagesReceived int
 	messagesFailed   int
+	tag		  string
+}
+
+type NsqdlookupdWrapper struct {
+	lookupdAddr string
+	metaInfoWrapper metaInfo
+	t *testing.T
+}
+
+func NewNsqlookupdWrapper(t *testing.T, addr string, metaInfo metaInfo) *NsqdlookupdWrapper {
+	proxy := &NsqdlookupdWrapper{
+		lookupdAddr:addr,
+		metaInfoWrapper:metaInfo,
+		t:t,
+	}
+	return proxy
+}
+
+func (self *NsqdlookupdWrapper) lookupdWrap(w http.ResponseWriter, r *http.Request) {
+	reqParams, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		self.t.Fatalf("error parse query %v", r.URL.RawQuery)
+	}
+	access := reqParams.Get("access")
+	topic := reqParams.Get("topic")
+	metainfo := reqParams.Get("metainfo")
+
+	val := r.Header.Get("Accept")
+	lookupdUrl := fmt.Sprintf("http://%s/lookup?topic=%s&access=%s&metainfo=%s", self.lookupdAddr, topic, access, metainfo)
+	req, err := http.NewRequest("GET", lookupdUrl, nil)
+	req.Header.Add("Accept", val)
+	fmt.Printf("%v\n", val)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		self.t.Fatalf("error from upstream lookup %v", err)
+	}
+	var nodes lookupResp
+	json.NewDecoder(resp.Body).Decode(&nodes)
+	defer resp.Body.Close()
+	nodes.Meta = self.metaInfoWrapper
+	jsonBytes, err := json.Marshal(&nodes)
+	if err != nil {
+		self.t.Fatalf("error parse lookup resp")
+	}
+
+	w.Header().Add("X-Nsq-Content-Type", "nsq; version=1.0")
+	w.Write(jsonBytes)
 }
 
 var nullLogger = log.New(ioutil.Discard, "", log.LstdFlags)
@@ -51,8 +100,41 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 	if msg != "single" && msg != "double" {
 		h.t.Error("message 'action' was not correct: ", msg, data)
 	}
+	if h.tag != "" {
+		if message.ExtVer != uint8(2) || string(message.ExtContext) != h.tag {
+			h.t.Error("message received has different tag or ext version: ", h.tag, message.ExtVer, string(message.ExtContext))
+		}
+	}
 	h.messagesReceived++
 	return nil
+}
+
+func EnsureTopicWithExt(t *testing.T, port int, topic string, part int, ext bool) {
+	endpoint := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", endpoint, 3*time.Second)
+	if err != nil {
+		t.Fatalf(err.Error())
+		return
+	}
+	conn.Write(MagicV2)
+	if ext {
+		CreateTopicWithExt(topic, part).WriteTo(conn)
+	} else {
+		CreateTopic(topic, part).WriteTo(conn)
+	}
+	resp, err := ReadResponse(conn)
+	if err != nil {
+		t.Fatal(err.Error())
+		return
+	}
+	frameType, data, err := UnpackResponse(resp)
+	if err != nil {
+		t.Fatal(err.Error())
+		return
+	}
+	if frameType == FrameTypeError {
+		t.Fatal(string(data))
+	}
 }
 
 func EnsureTopic(t *testing.T, port int, topic string, part int) {
@@ -82,6 +164,18 @@ func EnsureTopic(t *testing.T, port int, topic string, part int) {
 func SendMessage(t *testing.T, port int, topic string, method string, body []byte) {
 	httpclient := &http.Client{}
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/%s?topic=%s", port, method, topic)
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
+	resp, err := httpclient.Do(req)
+	if err != nil {
+		t.Fatalf(err.Error())
+		return
+	}
+	resp.Body.Close()
+}
+
+func SendTagedMessage(t *testing.T, port int, topic string, method string, body []byte, tag string) {
+	httpclient := &http.Client{}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/%s?topic=%s&tag=%s", port, method, topic, tag)
 	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
 	resp, err := httpclient.Do(req)
 	if err != nil {
@@ -172,6 +266,255 @@ func TestConsumerDiscoveryLookupd(t *testing.T) {
 
 func TestConsumerSubToNotLeader(t *testing.T) {
 	// TODO:
+}
+
+
+func TestConsumerSubToExtTopic(t *testing.T) {
+	consumerTagTest(t, func(c *Config) {
+		c.Set("desired_tag", "tagTest123")
+	})
+}
+
+func TestConsumerSubToExtTopicLookupd(t *testing.T) {
+	consumerTagTestLookupd(t, func(c *Config) {
+		c.Set("desired_tag", "tagTest123")
+	})
+}
+
+func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
+	lookupdAddrWrapper := "127.0.0.1:4162"
+	go func() {
+		lookupdWrapper := NewNsqlookupdWrapper(t, "127.0.0.1:4161", metaInfo{
+			PartitionNum:1,
+			Replica:1,
+			ExtendSupport:true,
+		})
+
+		http.HandleFunc("/lookup", lookupdWrapper.lookupdWrap)
+		http.ListenAndServe(lookupdAddrWrapper, nil)
+	}()
+	<-time.After(2 * time.Second)
+	fmt.Printf("nsqlookupd starts.")
+
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+	// so that the test can simulate reaching max requeues and a call to LogFailedMessage
+	config.DefaultRequeueDelay = 0
+	// so that the test wont timeout from backing off
+	config.MaxBackoffDuration = time.Millisecond * 50
+	if cb != nil {
+		cb(config)
+	}
+	tag := config.DesiredTag
+	//rest desired tag to default
+	config.DesiredTag = ""
+	topicName := "rdr_tag_test_lookupd"
+	if config.Deflate {
+		topicName = topicName + "_deflate"
+	} else if config.Snappy {
+		topicName = topicName + "_snappy"
+	}
+	if config.TlsV1 {
+		topicName = topicName + "_tls"
+	}
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	q, _ := NewConsumer(topicName, "ch", config)
+	q.SetLogger(newTestLogger(t), LogLevelDebug)
+
+	h := &MyTestHandler{
+		t: t,
+		q: q,
+	}
+	q.AddHandler(h)
+
+	EnsureTopicWithExt(t, 4150, topicName, 0, true)
+
+	q.ConnectToNSQLookupd(lookupdAddrWrapper)
+
+	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendTagedMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"), tag)
+	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
+	h.messagesSent = 8
+
+	select {
+	case <-time.After(time.Second * 20):
+		t.Errorf("tag consumer should stop after timeout")
+	case <-q.StopChan:
+	}
+
+	if h.messagesReceived != 16 || h.messagesSent != 8 {
+		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
+	}
+	if h.messagesFailed != 2 {
+		t.Fatal("failed message not done")
+	}
+}
+
+func consumerTagTest(t *testing.T, cb func(c *Config)) {
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+	// so that the test can simulate reaching max requeues and a call to LogFailedMessage
+	config.DefaultRequeueDelay = 0
+	// so that the test wont timeout from backing off
+	config.MaxBackoffDuration = time.Millisecond * 50
+	if cb != nil {
+		cb(config)
+	}
+	tag := config.DesiredTag
+	topicName := "rdr_tag_test"
+	if config.Deflate {
+		topicName = topicName + "_deflate"
+	} else if config.Snappy {
+		topicName = topicName + "_snappy"
+	}
+	if config.TlsV1 {
+		topicName = topicName + "_tls"
+	}
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	q, _ := NewConsumer(topicName, "ch", config)
+	q.SetLogger(newTestLogger(t), LogLevelDebug)
+
+	h := &MyTestHandler{
+		t: t,
+		q: q,
+		tag:tag,
+	}
+	q.AddHandler(h)
+
+	EnsureTopicWithExt(t, 4150, topicName, 0, true)
+
+	addr := "127.0.0.1:4150"
+	//test with invalid tag
+	q.SetConsumeExt(true)
+	err := q.ConnectToNSQD(addr, 2)
+	if err == nil {
+		time.Sleep(time.Second)
+		// should call on error
+		if len(q.connections) > 0 || len(q.nsqdTCPAddrs) > 0 {
+			t.Fatal("should disconnect from the NSQ with not exist partition !!!")
+		}
+	}
+
+	err = q.ConnectToNSQD(addr, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	//remove desired tag in new consumer
+	config.DesiredTag = "";
+	qn, _ := NewConsumer(topicName, "ch", config)
+	qn.SetConsumeExt(true)
+	qn.SetLogger(newTestLogger(t), LogLevelDebug)
+
+	hn := &MyTestHandler{
+		t: t,
+		q: qn,
+	}
+	qn.AddHandler(hn)
+	err = qn.ConnectToNSQD(addr, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendTagedMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"), tag)
+	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
+	h.messagesSent = 4
+	hn.messagesSent = 4
+
+	stats := q.Stats()
+	if stats.Connections == 0 {
+		t.Fatal("stats report 0 connections (should be > 0)")
+	}
+
+	err = q.ConnectToNSQD(addr, 0)
+	if err == nil {
+		t.Fatal("should not be able to connect to the same NSQ twice")
+	}
+
+	conn := q.conns()[0]
+	if !strings.HasPrefix(conn.conn.LocalAddr().String(), laddr) {
+		t.Fatal("connection should be bound to the specified address:", conn.conn.LocalAddr())
+	}
+
+	err = q.DisconnectFromNSQD("1.2.3.4:4150", "0")
+	if err == nil {
+		t.Fatal("should not be able to disconnect from an unknown nsqd")
+	}
+
+	err = q.ConnectToNSQD("1.2.3.4:4150", 0)
+	if err == nil {
+		t.Fatal("should not be able to connect to non-existent nsqd")
+	}
+
+	err = q.DisconnectFromNSQD("1.2.3.4:4150", "0")
+	if err != nil {
+		t.Fatal("should be able to disconnect from an nsqd - " + err.Error())
+	}
+
+	select {
+	case <-time.After(time.Second * 20):
+		t.Errorf("tag consumer should stop after timeout")
+	case <-q.StopChan:
+	}
+
+	select {
+	case <-time.After(time.Second * 20):
+		t.Errorf("tag consumer should stop after timeout")
+	case <-qn.StopChan:
+	}
+
+	stats = q.Stats()
+	if stats.Connections != 0 {
+		t.Fatalf("stats report %d active connections (should be 0), %v", stats.Connections, q.conns())
+	}
+
+	stats = q.Stats()
+	if stats.MessagesReceived != uint64(h.messagesReceived+h.messagesFailed) {
+		t.Fatalf("stats report %d messages received (should be %d)",
+			stats.MessagesReceived,
+			h.messagesReceived+h.messagesFailed)
+	}
+
+	if h.messagesReceived != 8 || h.messagesSent != 4 {
+		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
+	}
+	if h.messagesFailed != 1 {
+		t.Fatal("failed message not done")
+	}
+
+	stats = qn.Stats()
+	if stats.Connections != 0 {
+		t.Fatalf("stats report %d active connections (should be 0)", stats.Connections)
+	}
+
+	stats = qn.Stats()
+	if stats.MessagesReceived != uint64(hn.messagesReceived+hn.messagesFailed) {
+		t.Fatalf("stats report %d messages received (should be %d)",
+			stats.MessagesReceived,
+			hn.messagesReceived+hn.messagesFailed)
+	}
+
+	if hn.messagesReceived != 8 || hn.messagesSent != 4 {
+		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", hn.messagesReceived, hn.messagesSent)
+	}
+	if hn.messagesFailed != 1 {
+		t.Fatal("failed message not done")
+	}
 }
 
 func consumerTest(t *testing.T, cb func(c *Config)) {

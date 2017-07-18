@@ -99,6 +99,8 @@ type Consumer struct {
 	backoffCounter   int32
 	maxInFlight      int32
 
+	consume_ext	int32
+
 	mtx sync.RWMutex
 
 	logger   logger
@@ -202,6 +204,18 @@ func NewPartitionConsumer(topic string, part int, channel string, config *Config
 	r.wg.Add(1)
 	go r.rdyLoop()
 	return r, nil
+}
+
+func (r *Consumer) SetConsumeExt(topicExt bool) bool {
+	if topicExt == true {
+		return atomic.CompareAndSwapInt32(&r.consume_ext, 0, 1)
+	} else {
+		return atomic.CompareAndSwapInt32(&r.consume_ext, 1, 0)
+	}
+}
+
+func (r *Consumer) IsConsumeExt() bool {
+	return atomic.LoadInt32(&r.consume_ext) == int32(1)
 }
 
 func (r *Consumer) SetConsumeOffset(partition int, offset ConsumeOffset) error {
@@ -463,6 +477,7 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 
 	v, err := url.ParseQuery(u.RawQuery)
 	v.Add("topic", r.topic)
+	v.Add("metainfo", "true")
 	v.Add("access", "r")
 	if r.partition >= 0 {
 		v.Add("partition", strconv.Itoa(r.partition))
@@ -474,6 +489,7 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 type metaInfo struct {
 	PartitionNum int `json:"partition_num"`
 	Replica      int `json:"replica"`
+	ExtendSupport bool `json:"extend_support"`
 }
 
 type lookupResp struct {
@@ -535,6 +551,9 @@ func (r *Consumer) queryLookupd() {
 	if err != nil {
 		r.log(LogLevelError, "error querying nsqlookupd (%s) - %s", endpoint, err)
 		return
+	}
+	if data.Meta.ExtendSupport && !r.IsConsumeExt() {
+		r.SetConsumeExt(true)
 	}
 
 	var nsqdAddrs []string
@@ -634,6 +653,7 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 
 	conn := NewConn(addr, &r.config, &consumerConnDelegate{r})
 	conn.consumePart = strconv.Itoa(part)
+	conn.ext = r.IsConsumeExt()
 	conn.SetLogger(logger, logLvl,
 		fmt.Sprintf("%3d [%s(%v)/%s] (%%s)", r.id, r.topic, part, r.channel))
 

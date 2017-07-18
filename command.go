@@ -132,7 +132,12 @@ func Ping() *Command {
 
 // Publish creates a new Command to write a message to a given topic
 func CreateTopic(topic string, partition int) *Command {
-	var params = [][]byte{[]byte(topic), []byte(strconv.Itoa(partition))}
+	var params = [][]byte{[]byte(topic), []byte(strconv.Itoa(partition)), []byte("false")}
+	return &Command{[]byte("INTERNAL_CREATE_TOPIC"), params, nil}
+}
+
+func CreateTopicWithExt(topic string, partition int) *Command {
+	var params = [][]byte{[]byte(topic), []byte(strconv.Itoa(partition)), []byte("true")}
 	return &Command{[]byte("INTERNAL_CREATE_TOPIC"), params, nil}
 }
 
@@ -148,8 +153,27 @@ func PublishWithPart(topic string, part string, body []byte) *Command {
 	return &Command{[]byte("PUB"), params, body}
 }
 
+func PublishWithPartAndTag(topic string, part string, tag string, body []byte) *Command {
+	var params = [][]byte{[]byte(topic), []byte(part), []byte(tag)}
+	return &Command{[]byte("PUB"), params, body}
+}
+
 func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Command, error) {
 	var params = [][]byte{[]byte(topic), []byte(part)}
+	buf := bytes.NewBuffer(make([]byte, 0, 8+len(body)))
+	err := binary.Write(buf, binary.BigEndian, &traceID)
+	if err != nil {
+		return nil, err
+	}
+	_, err = buf.Write(body)
+	if err != nil {
+		return nil, err
+	}
+	return &Command{[]byte("PUB_TRACE"), params, buf.Bytes()}, nil
+}
+
+func PublishTraceAndTag(topic string, part string, tag string, traceID uint64, body []byte) (*Command, error) {
+	var params = [][]byte{[]byte(topic), []byte(part), []byte(tag)}
 	buf := bytes.NewBuffer(make([]byte, 0, 8+len(body)))
 	err := binary.Write(buf, binary.BigEndian, &traceID)
 	if err != nil {

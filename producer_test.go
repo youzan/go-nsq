@@ -365,6 +365,89 @@ func TestTopicProducerMgrGetNextProducer(t *testing.T) {
 	}
 }
 
+func TestTopicProducerMgrWithTagDynamicTopic(t *testing.T) {
+	testTopicProducerMgrWithTag(t, true)
+}
+
+func TestTopicProducerMgrWithTagStaticTopic(t *testing.T) {
+	testTopicProducerMgrWithTag(t, false)
+}
+
+func testTopicProducerMgrWithTag(t *testing.T, dynamic bool) {
+	topicName := "topic_producer_mgr_publish_ext" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 10
+	topicList := make([]string, 0)
+	for i := 0; i < 3; i++ {
+		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
+		EnsureTopicWithExt(t, 4150, "t"+strconv.Itoa(i)+topicName, 0, true)
+		ensureInitChannel(t, "t"+strconv.Itoa(i)+topicName, false)
+	}
+
+	// wait nsqd report to lookupd
+	time.Sleep(time.Second * 3)
+
+	config := NewConfig()
+	initTopics := make([]string, 0)
+	if !dynamic {
+		initTopics = topicList
+	}
+	config.PubStrategy = PubRR
+	config.DialTimeout = time.Second
+	config.ReadTimeout = time.Second * 6
+	config.HeartbeatInterval = time.Second * 3
+	w, err := NewTopicProducerMgr(initTopics, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4161")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	var testData [][]byte
+	for i := 0; i < msgCount; i++ {
+		testData = append(testData, []byte("publish_tag_test_case"))
+	}
+
+	var wg sync.WaitGroup
+	// test async pub
+	tag := "thisIsTag1"
+	for _, tn := range topicList {
+		wg.Add(1)
+		go func(tname string) {
+			defer wg.Done()
+			responseChan := make(chan *ProducerTransaction, msgCount)
+			for i := 0; i < msgCount; i++ {
+				err := w.PublishAsyncWithTag(tname, tag, []byte("publish_test_case"), responseChan, tname)
+				if err != nil {
+					t.Fatalf(err.Error())
+				}
+			}
+
+			for i := 0; i < msgCount; i++ {
+				trans := <-responseChan
+				if trans.Error != nil {
+					t.Fatalf(trans.Error.Error())
+				}
+				if trans.Args[0].(string) != tname {
+					t.Fatalf(`proxied arg "%s" != "%s"`, trans.Args[0].(string), tname)
+				}
+			}
+
+			go func() {
+				time.Sleep(time.Second)
+				err := w.PublishWithTag(tname, tag, []byte("bad_test_case"))
+				if err != nil {
+					t.Fatalf("error %s", err)
+				}
+			}()
+			readExtMessages(tname, t, msgCount, false)
+		}(tn)
+	}
+	wg.Wait()
+}
+
 func testTopicProducerMgr(t *testing.T, dynamic bool) {
 	topicName := "topic_producer_mgr_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
@@ -500,6 +583,48 @@ func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) 
 	config.DefaultRequeueDelay = 0
 	config.MaxBackoffDuration = 50 * time.Millisecond
 	q, _ := NewConsumer(topicName, "ch", config)
+	//q.SetLogger(log.New(os.Stderr, "", log.LstdFlags), LogLevelInfo)
+	q.SetLogger(nullLogger, LogLevelInfo)
+
+	h := &ConsumerHandler{
+		t: t,
+		q: q,
+	}
+	q.AddHandler(h)
+
+	if useLookup {
+		err := q.ConnectToNSQLookupd("127.0.0.1:4161")
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
+	} else {
+		err := q.ConnectToNSQD("127.0.0.1:4150", 0)
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
+	}
+	select {
+	case <-q.StopChan:
+	case <-time.After(time.Second * 10):
+		t.Errorf("timeout for consume")
+		q.Stop()
+	}
+
+	if h.messagesGood != msgCount {
+		t.Fatalf("end of test. should have handled a diff number of messages %d != %d", h.messagesGood, msgCount)
+	}
+
+	if h.messagesFailed != 1 {
+		t.Fatal("failed message not done")
+	}
+}
+
+func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup bool) {
+	config := NewConfig()
+	config.DefaultRequeueDelay = 0
+	config.MaxBackoffDuration = 50 * time.Millisecond
+	q, _ := NewConsumer(topicName, "ch", config)
+	q.SetConsumeExt(true)
 	//q.SetLogger(log.New(os.Stderr, "", log.LstdFlags), LogLevelInfo)
 	q.SetLogger(nullLogger, LogLevelInfo)
 
