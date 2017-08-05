@@ -46,7 +46,7 @@ type Message struct {
 	Offset               uint64
 	RawSize              uint32
 
-	ExtVer	uint8
+	ExtVer     uint8
 	ExtContext []byte
 }
 
@@ -189,23 +189,35 @@ func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
 		return nil, errors.New("not enough data to decode valid message")
 	}
 	var msg Message
+	pos := 0
 	msg.Timestamp = int64(binary.BigEndian.Uint64(b[:8]))
-	msg.Attempts = binary.BigEndian.Uint16(b[8:10])
+	pos += 8
+	msg.Attempts = binary.BigEndian.Uint16(b[pos : pos+2])
+	pos += 2
 
-	copy(msg.ID[:], b[10:10+MsgIDLength])
-	bodyStart := 10 + MsgIDLength
+	copy(msg.ID[:], b[pos:pos+MsgIDLength])
+	pos += MsgIDLength
 	if ext {
-		msg.ExtVer = uint8(b[10+MsgIDLength])
+		if len(b) < pos+1 {
+			return nil, errors.New("not enough data to decode valid message")
+		}
+		msg.ExtVer = uint8(b[pos])
+		pos++
 		switch msg.ExtVer {
 		case 0x0:
-			bodyStart = 10 + MsgIDLength + 1
 		default:
-			extLen :=  binary.BigEndian.Uint16(b[10 + MsgIDLength + 1 : 10 + MsgIDLength + 3])
-			msg.ExtContext = b[10 + MsgIDLength + 3 : 10 + MsgIDLength + 3 + extLen]
-			bodyStart = 10 + MsgIDLength + 3 + int(extLen)
+			if len(b) < pos+2 {
+				return nil, errors.New("not enough data to decode valid message")
+			}
+			extLen := binary.BigEndian.Uint16(b[pos : pos+2])
+			pos += 2
+			if len(b) < pos+int(extLen) {
+				return nil, errors.New("not enough data to decode valid message")
+			}
+			msg.ExtContext = b[pos : pos+int(extLen)]
+			pos += int(extLen)
 		}
 	}
-
-	msg.Body = b[bodyStart:]
+	msg.Body = b[pos:]
 	return &msg, nil
 }

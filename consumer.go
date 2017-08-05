@@ -99,7 +99,7 @@ type Consumer struct {
 	backoffCounter   int32
 	maxInFlight      int32
 
-	consume_ext	int32
+	consume_ext int32
 
 	mtx sync.RWMutex
 
@@ -487,8 +487,8 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 }
 
 type metaInfo struct {
-	PartitionNum int `json:"partition_num"`
-	Replica      int `json:"replica"`
+	PartitionNum  int  `json:"partition_num"`
+	Replica       int  `json:"replica"`
 	ExtendSupport bool `json:"extend_support"`
 }
 
