@@ -14,6 +14,11 @@ import (
 var byteSpace = []byte(" ")
 var byteNewLine = []byte("\n")
 
+const (
+	traceIDExtK     = "##trace_id"
+	dispatchTagExtK = "##client_dispatch_tag"
+)
+
 // Command represents a command from a client to an NSQ daemon
 type Command struct {
 	Name   []byte
@@ -153,11 +158,6 @@ func PublishWithPart(topic string, part string, body []byte) *Command {
 	return &Command{[]byte("PUB"), params, body}
 }
 
-func PublishWithPartAndTag(topic string, part string, tag string, body []byte) *Command {
-	var params = [][]byte{[]byte(topic), []byte(part), []byte(tag)}
-	return &Command{[]byte("PUB"), params, body}
-}
-
 func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Command, error) {
 	var params = [][]byte{[]byte(topic), []byte(part)}
 	buf := bytes.NewBuffer(make([]byte, 0, 8+len(body)))
@@ -172,18 +172,17 @@ func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Comm
 	return &Command{[]byte("PUB_TRACE"), params, buf.Bytes()}, nil
 }
 
-func PublishTraceAndTag(topic string, part string, tag string, traceID uint64, body []byte) (*Command, error) {
-	var params = [][]byte{[]byte(topic), []byte(part), []byte(tag)}
-	buf := bytes.NewBuffer(make([]byte, 0, 8+len(body)))
-	err := binary.Write(buf, binary.BigEndian, &traceID)
-	if err != nil {
-		return nil, err
+func PublishWithJsonExt(topic string, part string, body []byte, jsonExt []byte) (*Command, error) {
+	var params = [][]byte{[]byte(topic), []byte(part)}
+	if len(jsonExt) > 65535 {
+		return nil, errors.New("extend header too large")
 	}
-	_, err = buf.Write(body)
-	if err != nil {
-		return nil, err
-	}
-	return &Command{[]byte("PUB_TRACE"), params, buf.Bytes()}, nil
+	hlen := uint16(len(jsonExt))
+	extBody := make([]byte, len(body)+2+len(jsonExt))
+	binary.BigEndian.PutUint16(extBody, hlen)
+	copy(extBody[2:], jsonExt)
+	copy(extBody[2+hlen:], body)
+	return &Command{[]byte("PUB_EXT"), params, extBody}, nil
 }
 
 func getMPubBodyV2(bodies []*bytes.Buffer) (*bytes.Buffer, error) {

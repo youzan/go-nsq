@@ -10,12 +10,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-	"net/url"
 )
 
 type MyTestHandler struct {
@@ -24,20 +24,20 @@ type MyTestHandler struct {
 	messagesSent     int
 	messagesReceived int
 	messagesFailed   int
-	tag		  string
+	tag              string
 }
 
 type NsqdlookupdWrapper struct {
-	lookupdAddr string
+	lookupdAddr     string
 	metaInfoWrapper metaInfo
-	t *testing.T
+	t               *testing.T
 }
 
 func NewNsqlookupdWrapper(t *testing.T, addr string, metaInfo metaInfo) *NsqdlookupdWrapper {
 	proxy := &NsqdlookupdWrapper{
-		lookupdAddr:addr,
-		metaInfoWrapper:metaInfo,
-		t:t,
+		lookupdAddr:     addr,
+		metaInfoWrapper: metaInfo,
+		t:               t,
 	}
 	return proxy
 }
@@ -101,7 +101,7 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 		h.t.Error("message 'action' was not correct: ", msg, data)
 	}
 	if h.tag != "" {
-		if message.ExtVer != uint8(2) || string(message.ExtContext) != h.tag {
+		if message.ExtVer != uint8(4) || !strings.Contains(string(message.ExtContext), h.tag) {
 			h.t.Error("message received has different tag or ext version: ", h.tag, message.ExtVer, string(message.ExtContext))
 		}
 	}
@@ -175,7 +175,8 @@ func SendMessage(t *testing.T, port int, topic string, method string, body []byt
 
 func SendTagedMessage(t *testing.T, port int, topic string, method string, body []byte, tag string) {
 	httpclient := &http.Client{}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/%s?topic=%s&tag=%s", port, method, topic, tag)
+	jsonStr := fmt.Sprintf("{\"##client_dispatch_tag\":\"%s\"}", tag)
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/%s?topic=%s&ext=%s", port, method, topic, url.QueryEscape(jsonStr))
 	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
 	resp, err := httpclient.Do(req)
 	if err != nil {
@@ -268,7 +269,6 @@ func TestConsumerSubToNotLeader(t *testing.T) {
 	// TODO:
 }
 
-
 func TestConsumerSubToExtTopic(t *testing.T) {
 	consumerTagTest(t, func(c *Config) {
 		c.Set("desired_tag", "tagTest123")
@@ -285,9 +285,9 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	lookupdAddrWrapper := "127.0.0.1:4162"
 	go func() {
 		lookupdWrapper := NewNsqlookupdWrapper(t, "127.0.0.1:4161", metaInfo{
-			PartitionNum:1,
-			Replica:1,
-			ExtendSupport:true,
+			PartitionNum:  1,
+			Replica:       1,
+			ExtendSupport: true,
 		})
 
 		http.HandleFunc("/lookup", lookupdWrapper.lookupdWrap)
@@ -384,9 +384,9 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 
 	h := &MyTestHandler{
-		t: t,
-		q: q,
-		tag:tag,
+		t:   t,
+		q:   q,
+		tag: tag,
 	}
 	q.AddHandler(h)
 
@@ -410,7 +410,7 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 	}
 
 	//remove desired tag in new consumer
-	config.DesiredTag = "";
+	config.DesiredTag = ""
 	qn, _ := NewConsumer(topicName, "ch", config)
 	qn.SetConsumeExt(true)
 	qn.SetLogger(newTestLogger(t), LogLevelDebug)
@@ -425,13 +425,13 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 		t.Fatal(err)
 	}
 
-	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendTagedMessage(t, 4151, topicName, "pub_ext", []byte(`{"msg":"single"}`), tag)
 	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
-	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendTagedMessage(t, 4151, topicName, "pub_ext", []byte(`{"msg":"single"}`), tag)
 	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
-	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
+	SendTagedMessage(t, 4151, topicName, "pub_ext", []byte(`{"msg":"single"}`), tag)
 	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
-	SendTagedMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"), tag)
+	SendTagedMessage(t, 4151, topicName, "pub_ext", []byte("TOBEFAILED"), tag)
 	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
 	h.messagesSent = 4
 	hn.messagesSent = 4

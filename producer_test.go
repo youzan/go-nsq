@@ -248,6 +248,75 @@ func TestProducerMultiPublishAsync(t *testing.T) {
 	readMessages(topicName, t, msgCount, false)
 }
 
+func TestProducerPublishTrace(t *testing.T) {
+	topicName := "publish_trace" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 10
+	EnsureTopic(t, 4150, topicName, 0)
+	ensureInitChannel(t, topicName, false)
+
+	config := NewConfig()
+	w, _ := NewProducer("127.0.0.1:4150", config)
+	w.SetLogger(nullLogger, LogLevelInfo)
+	defer w.Stop()
+
+	for i := 0; i < msgCount; i++ {
+		cmd, _ := PublishTrace(topicName, "0", uint64(i+1), []byte("publish_test_case"))
+		resp, err := w.sendCommand(cmd)
+		if err != nil {
+			t.Fatalf("error %s", err)
+		}
+		if len(resp) != 2+MsgIDLength+8+4 {
+			t.Fatalf("invalid trace response: %v", resp)
+		}
+	}
+
+	err := w.Publish(topicName, []byte("bad_test_case"))
+	if err != nil {
+		t.Fatalf("error %s", err)
+	}
+
+	readMessages(topicName, t, msgCount, false)
+}
+func TestProducerPublishWithExt(t *testing.T) {
+	topicName := "publish_ext" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 10
+	EnsureTopicWithExt(t, 4150, topicName, 0, true)
+	ensureInitChannel(t, topicName, false)
+
+	config := NewConfig()
+	w, _ := NewProducer("127.0.0.1:4150", config)
+	w.SetLogger(nullLogger, LogLevelInfo)
+	defer w.Stop()
+
+	for i := 0; i < msgCount; i++ {
+		var e MsgExt
+		if i > msgCount/2 {
+			e.TraceID = uint64(i)
+		}
+		cmd, _ := PublishWithJsonExt(topicName, "0", []byte("publish_test_case"), e.ToJson())
+		resp, err := w.sendCommand(cmd)
+		if err != nil {
+			t.Fatalf("error %s", err)
+		}
+		if i > msgCount/2 {
+			if len(resp) != 2+MsgIDLength+8+4 {
+				t.Errorf("invalid trace response: %v, %v", resp, string(e.ToJson()))
+			}
+		} else {
+			if len(resp) != 2 {
+				t.Fatalf("invalid trace response: %v", resp)
+			}
+		}
+	}
+
+	err := w.Publish(topicName, []byte("bad_test_case"))
+	if err != nil {
+		t.Fatalf("error %s", err)
+	}
+
+	readExtMessages(topicName, t, msgCount, false)
+}
+
 func TestProducerHeartbeat(t *testing.T) {
 	topicName := "heartbeat" + strconv.Itoa(int(time.Now().Unix()))
 
@@ -412,14 +481,15 @@ func testTopicProducerMgrWithTag(t *testing.T, dynamic bool) {
 
 	var wg sync.WaitGroup
 	// test async pub
-	tag := "thisIsTag1"
 	for _, tn := range topicList {
 		wg.Add(1)
 		go func(tname string) {
 			defer wg.Done()
 			responseChan := make(chan *ProducerTransaction, msgCount)
+			var jsonExt MsgExt
+			jsonExt.DispatchTag = "thisIsTag1"
 			for i := 0; i < msgCount; i++ {
-				err := w.PublishAsyncWithTag(tname, tag, []byte("publish_test_case"), responseChan, tname)
+				err := w.PublishAsyncWithJsonExt(tname, []byte("publish_test_case"), &jsonExt, responseChan, tname)
 				if err != nil {
 					t.Fatalf(err.Error())
 				}
@@ -437,7 +507,9 @@ func testTopicProducerMgrWithTag(t *testing.T, dynamic bool) {
 
 			go func() {
 				time.Sleep(time.Second)
-				err := w.PublishWithTag(tname, tag, []byte("bad_test_case"))
+				var jsonExt MsgExt
+				jsonExt.DispatchTag = "thisIsTag1"
+				_, _, _, err := w.PublishWithJsonExt(tname, []byte("bad_test_case"), &jsonExt)
 				if err != nil {
 					t.Fatalf("error %s", err)
 				}
