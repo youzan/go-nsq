@@ -64,7 +64,7 @@ type Conn struct {
 	tlsConn     *tls.Conn
 	addr        string
 	consumePart string
-	ext	    bool
+	ext         bool
 
 	delegate ConnDelegate
 
@@ -323,6 +323,9 @@ func (c *Conn) identify() (*IdentifyResponse, error) {
 	}
 	ci["msg_timeout"] = int64(c.config.MsgTimeout / time.Millisecond)
 	ci["desired_tag"] = c.config.DesiredTag
+	if c.ext {
+		ci["extend_support"] = true
+	}
 
 	cmd, err := Identify(ci)
 	if err != nil {
