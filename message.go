@@ -46,8 +46,8 @@ type Message struct {
 	Offset               uint64
 	RawSize              uint32
 
-	ExtVer     uint8
-	ExtContext []byte
+	ExtVer   uint8
+	ExtBytes []byte
 }
 
 // NewMessage creates a Message, initializes some metadata,
@@ -214,7 +214,7 @@ func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
 			if len(b) < pos+int(extLen) {
 				return nil, errors.New("not enough data to decode valid message")
 			}
-			msg.ExtContext = b[pos : pos+int(extLen)]
+			msg.ExtBytes = b[pos : pos+int(extLen)]
 			pos += int(extLen)
 		}
 	}
