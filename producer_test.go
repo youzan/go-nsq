@@ -39,6 +39,34 @@ func (h *ConsumerHandler) HandleMessage(message *Message) error {
 	return nil
 }
 
+func ensureInitChannelExt(t *testing.T, topicName string, useLookup bool) {
+	config := NewConfig()
+	config.DefaultRequeueDelay = 0
+	config.MaxBackoffDuration = 50 * time.Millisecond
+	q, _ := NewConsumer(topicName, "ch", config)
+	q.SetLogger(nullLogger, LogLevelInfo)
+
+	h := &ConsumerHandler{
+		t: t,
+		q: q,
+	}
+	q.AddHandler(h)
+	q.SetConsumeExt(true)
+
+	if useLookup {
+		err := q.ConnectToNSQLookupd("127.0.0.1:4161")
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
+	} else {
+		err := q.ConnectToNSQD("127.0.0.1:4150", 0)
+		if err != nil {
+			t.Errorf("init error: %v", err.Error())
+		}
+	}
+	q.Stop()
+}
+
 func ensureInitChannel(t *testing.T, topicName string, useLookup bool) {
 	config := NewConfig()
 	config.DefaultRequeueDelay = 0
@@ -51,7 +79,6 @@ func ensureInitChannel(t *testing.T, topicName string, useLookup bool) {
 		q: q,
 	}
 	q.AddHandler(h)
-
 	if useLookup {
 		err := q.ConnectToNSQLookupd("127.0.0.1:4161")
 		if err != nil {
@@ -449,7 +476,7 @@ func testTopicProducerMgrWithTag(t *testing.T, dynamic bool) {
 	for i := 0; i < 3; i++ {
 		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
 		EnsureTopicWithExt(t, 4150, "t"+strconv.Itoa(i)+topicName, 0, true)
-		ensureInitChannel(t, "t"+strconv.Itoa(i)+topicName, false)
+		ensureInitChannelExt(t, "t"+strconv.Itoa(i)+topicName, false)
 	}
 
 	// wait nsqd report to lookupd
