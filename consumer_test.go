@@ -101,8 +101,8 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 		h.t.Error("message 'action' was not correct: ", msg, data)
 	}
 	if h.tag != "" {
-		if message.ExtVer != uint8(4) || !strings.Contains(string(message.ExtContext), h.tag) {
-			h.t.Error("message received has different tag or ext version: ", h.tag, message.ExtVer, string(message.ExtContext))
+		if message.ExtVer != uint8(4) || !strings.Contains(string(message.ExtBytes), h.tag) {
+			h.t.Error("message received has different tag or ext version: ", h.tag, message.ExtVer, string(message.ExtBytes))
 		}
 	}
 	h.messagesReceived++
