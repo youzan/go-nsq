@@ -8,7 +8,7 @@ env:
 install:
   - go get github.com/golang/snappy 
 script:
-  - wget https://github.com/absolute8511/nsq/releases/download/$NSQ_RELEASE/$NSQ_DOWNLOAD.tar.gz
+  - wget https://github.com/youzan/nsq/releases/download/$NSQ_RELEASE/$NSQ_DOWNLOAD.tar.gz
   - tar zxvf $NSQ_DOWNLOAD.tar.gz
   - export PATH=$NSQ_DOWNLOAD/bin:$PATH
   - pushd $TRAVIS_BUILD_DIR
