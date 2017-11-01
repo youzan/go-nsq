@@ -23,8 +23,9 @@ const (
 )
 
 var (
-	ErrTopicNotSet = errors.New("topic is not set as producer")
-	ErrNoProducer  = errors.New("topic producer not found")
+	ErrTopicNotSet        = errors.New("topic is not set as producer")
+	ErrNoProducer         = errors.New("topic producer not found")
+	errMissingShardingKey = errors.New("missing sharding key for ordered publish")
 )
 
 type producerConn interface {
@@ -406,8 +407,8 @@ type PubStrategyType int
 
 const (
 	PubRR PubStrategyType = iota
+	// not yet supported
 	PubDynamicLoad
-	PubIDHash
 )
 
 type AddrPartInfo struct {
@@ -830,27 +831,33 @@ func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartPro
 	length := len(partProducerInfo.allPartitions)
 	if length == 0 {
 		return -1, ""
-	} else if length == 1 && self.pubStrategy != PubIDHash {
+	} else if length == 1 && partitionKey == nil {
 		addrInfo = partProducerInfo.getPartitionInfo(0)
 		return addrInfo.pid, addrInfo.addr
 	}
 	retry := 0
 	index := uint32(0)
 	for addrInfo.addr == "" {
-		if self.pubStrategy == PubRR {
-			if retry >= length {
-				break
-			}
-			index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
-			addrInfo = partProducerInfo.getPartitionInfo(index % uint32(len(partProducerInfo.allPartitions)))
-			retry++
-		} else if self.pubStrategy == PubIDHash {
-			if partitionKey == nil {
-				self.log(LogLevelError, "partitionKey can not be nil while using hash pub strategy")
+		if partitionKey == nil {
+			if self.pubStrategy == PubRR {
+				if retry >= length {
+					break
+				}
+				index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
+				addrInfo = partProducerInfo.getPartitionInfo(index % uint32(len(partProducerInfo.allPartitions)))
+				retry++
+			} else {
+				// not supported strategy
 				return -1, ""
 			}
+		} else {
 			if !partProducerInfo.isMetaValid || partProducerInfo.meta.PartitionNum <= 0 {
 				self.log(LogLevelError, "partition meta info invalid: %v", partProducerInfo.meta)
+				return -1, ""
+			}
+
+			if self.config.Hasher == nil {
+				self.log(LogLevelError, "missing sharding key hasher")
 				return -1, ""
 			}
 
@@ -1060,6 +1067,9 @@ func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
 
 func (self *TopicProducerMgr) PublishOrdered(topic string, partitionKey []byte, body []byte) (NewMessageID,
 	uint64, uint32, error) {
+	if partitionKey == nil {
+		return 0, 0, 0, errMissingShardingKey
+	}
 	resp, err := self.doCommandWithRetry(topic, partitionKey, func(pid int) (*Command, error) {
 		if pid < 0 {
 			return nil, errors.New("ordered pub need partition id")
@@ -1096,6 +1106,9 @@ func (self *TopicProducerMgr) PublishOrdered(topic string, partitionKey []byte, 
 
 func (self *TopicProducerMgr) PublishOrderedWithJsonExt(topic string, partitionKey []byte, body []byte, ext *MsgExt) (NewMessageID,
 	uint64, uint32, error) {
+	if partitionKey == nil {
+		return 0, 0, 0, errMissingShardingKey
+	}
 	resp, err := self.doCommandWithRetry(topic, partitionKey, func(pid int) (*Command, error) {
 		if pid < 0 {
 			return nil, errors.New("ordered pub need partition id")
