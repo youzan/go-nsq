@@ -113,7 +113,7 @@ type Config struct {
 	LookupdPollJitter   float64       `opt:"lookupd_poll_jitter" min:"0" max:"1" default:"0.3"`
 
 	// Maximum duration when REQueueing (for doubling of deferred requeue)
-	MaxRequeueDelay     time.Duration `opt:"max_requeue_delay" min:"0" max:"60m" default:"15m"`
+	MaxRequeueDelay     time.Duration `opt:"max_requeue_delay" min:"0" max:"600m" default:"15m"`
 	DefaultRequeueDelay time.Duration `opt:"default_requeue_delay" min:"0" max:"60m" default:"90s"`
 
 	// Backoff strategy, defaults to exponential backoff. Overwrite this to define alternative backoff algrithms.
@@ -124,7 +124,7 @@ type Config struct {
 	BackoffMultiplier time.Duration `opt:"backoff_multiplier" min:"0" max:"60m" default:"1s"`
 
 	// Maximum number of times this consumer will attempt to process a message before giving up
-	MaxAttempts uint16 `opt:"max_attempts" min:"0" max:"65535" default:"5"`
+	MaxAttempts uint16 `opt:"max_attempts" min:"0" max:"65535" default:"15"`
 
 	// Duration to wait for a message from a producer when in a state where RDY
 	// counts are re-distributed (ie. max_in_flight < num_producers)
