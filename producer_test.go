@@ -90,6 +90,8 @@ func ensureInitChannel(t *testing.T, topicName string, useLookup bool) {
 			t.Errorf("init error: %v", err.Error())
 		}
 	}
+
+	time.Sleep(time.Second)
 	q.Stop()
 }
 
