@@ -349,7 +349,7 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	case <-q.StopChan:
 	}
 
-	if h.messagesReceived != 16 || h.messagesSent != 8 {
+	if h.messagesReceived != h.messagesSent+h.messagesFailed*int(config.MaxAttempts-1) || h.messagesSent != 8 {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
 	}
 	if h.messagesFailed != 2 {
@@ -490,7 +490,7 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 			h.messagesReceived+h.messagesFailed)
 	}
 
-	if h.messagesReceived != 8 || h.messagesSent != 4 {
+	if h.messagesReceived != h.messagesSent+h.messagesFailed*int(config.MaxAttempts-1) || h.messagesSent != 4 {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
 	}
 	if h.messagesFailed != 1 {
@@ -509,7 +509,7 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 			hn.messagesReceived+hn.messagesFailed)
 	}
 
-	if hn.messagesReceived != 8 || hn.messagesSent != 4 {
+	if hn.messagesReceived != hn.messagesSent+hn.messagesFailed*(int(config.MaxAttempts)-1) || hn.messagesSent != 4 {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", hn.messagesReceived, hn.messagesSent)
 	}
 	if hn.messagesFailed != 1 {
@@ -526,6 +526,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	config.DefaultRequeueDelay = 0
 	// so that the test wont timeout from backing off
 	config.MaxBackoffDuration = time.Millisecond * 50
+	config.MaxAttempts = 7
 	if cb != nil {
 		cb(config)
 	}
@@ -618,7 +619,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 			h.messagesReceived+h.messagesFailed)
 	}
 
-	if h.messagesReceived != 8 || h.messagesSent != 4 {
+	if h.messagesReceived != h.messagesSent+int(config.MaxAttempts)-1 || h.messagesSent != 4 {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
 	}
 	if h.messagesFailed != 1 {
