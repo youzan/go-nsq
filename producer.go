@@ -596,7 +596,7 @@ func (self *TopicProducerMgr) TriggerCheckForError(err error, delay time.Duratio
 
 // TODO: may be we can move the lookup query to some other manager class and all producer share the
 // lookup manager
-func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]string, string) {
+func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (string, map[string]string, string) {
 	self.mtx.RLock()
 	if self.lookupdQueryIndex >= len(self.lookupdHTTPAddrs) {
 		self.lookupdQueryIndex = 0
@@ -641,20 +641,43 @@ func (self *TopicProducerMgr) nextLookupdEndpoint(newTopic string) (map[string]s
 			urlList[t] = tmpUrl.String()
 		}
 	}
-	return urlList, listUrl.String()
+	return addr, urlList, listUrl.String()
 }
 
 func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 	if newTopic != "" {
 		self.log(LogLevelInfo, "new topic %v added", newTopic)
 	}
-	topicQueryList, discoveryUrl := self.nextLookupdEndpoint(newTopic)
+	addr, topicQueryList, discoveryUrl := self.nextLookupdEndpoint(newTopic)
 	// discovery other lookupd nodes from current lookupd or from etcd
 	self.log(LogLevelDebug, "discovery nsqlookupd %s", discoveryUrl)
 	var lookupdList lookupListResp
 	err := apiRequestNegotiateV1("GET", discoveryUrl, nil, &lookupdList)
 	if err != nil {
 		self.log(LogLevelError, "error discovery nsqlookupd (%s) - %s", discoveryUrl, err)
+		if strings.Contains(strings.ToLower(err.Error()), "connection refused") {
+			self.mtx.Lock()
+			// remove failed
+			self.log(LogLevelInfo, "removing failed lookup : %v", addr)
+			newLookupList := make([]string, 0)
+			for _, v := range self.lookupdHTTPAddrs {
+				if v == addr {
+					continue
+				} else {
+					newLookupList = append(newLookupList, v)
+				}
+			}
+			if len(newLookupList) > 0 {
+				self.lookupdHTTPAddrs = newLookupList
+			}
+			self.mtx.Unlock()
+			select {
+			case self.lookupdRecheckChan <- 1:
+				self.log(LogLevelInfo, "trigger tend for err: %v", err)
+			default:
+			}
+			return
+		}
 	} else {
 		for _, node := range lookupdList.LookupdNodes {
 			addr := net.JoinHostPort(node.NodeIp, node.HttpPort)

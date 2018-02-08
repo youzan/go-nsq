@@ -2,6 +2,7 @@ package nsq
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"sync/atomic"
@@ -28,6 +29,13 @@ func GetCompatibleMsgIDFromNew(id NewMessageID, traceID uint64) MessageID {
 func GetNewMessageID(old []byte) NewMessageID {
 	return NewMessageID(binary.BigEndian.Uint64(old[:8]))
 }
+
+//ext versions
+// version for message has no ext
+var NoExtVer = uint8(0)
+
+// version for message has json header ext
+var JSONHeaderExtVer = uint8(4)
 
 // Message is the fundamental data type containing
 // the id, body, and metadata
@@ -69,6 +77,20 @@ func (m *Message) GetTraceID() uint64 {
 
 func (m *Message) GetFullMsgID() FullMessageID {
 	return FullMessageID(m.ID)
+}
+
+func (m *Message) GetJsonExt() (*MsgExt, error) {
+	if m.ExtVer != JSONHeaderExtVer {
+		return nil, errors.New("the header is not json extention")
+	}
+	var jext MsgExt
+	if len(m.ExtBytes) > 0 {
+		err := json.Unmarshal(m.ExtBytes, &jext)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &jext, nil
 }
 
 // DisableAutoResponse disables the automatic response that
