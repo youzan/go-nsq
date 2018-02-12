@@ -1361,8 +1361,15 @@ func (self *TopicProducerMgr) SetLogger(l logger, lvl LogLevel) {
 	self.logLvl = lvl
 }
 
+func (self *TopicProducerMgr) SetLoggerLevel(lvl LogLevel) {
+	self.logGuard.Lock()
+	defer self.logGuard.Unlock()
+	self.logLvl = lvl
+}
+
 func (self *TopicProducerMgr) getLogger() (logger, LogLevel) {
 	self.logGuard.RLock()
-	defer self.logGuard.RUnlock()
-	return self.logger, self.logLvl
+	lg, lv := self.logger, self.logLvl
+	self.logGuard.RUnlock()
+	return lg, lv
 }
