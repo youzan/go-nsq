@@ -463,6 +463,83 @@ func TestTopicProducerMgrGetNextProducer(t *testing.T) {
 	}
 }
 
+func TestTopicProducerMgrRemoveFailedLookupd(t *testing.T) {
+	topicName := "topic_producer_mgr_failed_lookup" + strconv.Itoa(int(time.Now().Unix()))
+	topicList := make([]string, 0)
+	for i := 0; i < 1; i++ {
+		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 0)
+	}
+
+	// wait nsqd report to lookupd
+	time.Sleep(time.Second * 3)
+	for i := 0; i < 1; i++ {
+		ensureInitChannel(t, "t"+strconv.Itoa(i)+topicName, true)
+	}
+
+	config := NewConfig()
+	config.LookupdSeeds = append(config.LookupdSeeds, "127.0.0.1:4161")
+	// add failed lookupd to seeds
+	config.LookupdSeeds = append(config.LookupdSeeds, "127.0.0.1:5161")
+	config.LookupdPollInterval = time.Second
+	initTopics := make([]string, 0)
+	initTopics = topicList
+	config.PubStrategy = PubRR
+	w, err := NewTopicProducerMgr(initTopics, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w.ConnectToSeeds()
+	// add failed lookupd by force
+	w.mtx.Lock()
+	w.lookupdHTTPAddrs = append(w.lookupdHTTPAddrs, "127.0.0.1:6161")
+	w.mtx.Unlock()
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	defer w.Stop()
+
+	for _, tn := range topicList {
+		_, _, err := w.getProducer(tn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	cnt := 60
+	passCnt := 0
+	for cnt > 0 {
+		time.Sleep(time.Second)
+		cnt--
+		ret := func() bool {
+			w.mtx.Lock()
+			defer w.mtx.Unlock()
+			if FindString(w.lookupdHTTPAddrs, "127.0.0.1:6161") != -1 {
+				t.Logf("should remove failed lookupd: %v", w.lookupdHTTPAddrs)
+				return false
+			}
+			if FindString(w.lookupdHTTPAddrs, "127.0.0.1:5161") == -1 {
+				t.Logf("should keep seed for failed lookupd: %v", w.lookupdHTTPAddrs)
+				return false
+			}
+			if FindString(w.lookupdHTTPAddrs, "127.0.0.1:4161") == -1 {
+				t.Logf("should keep normal lookupd: %v", w.lookupdHTTPAddrs)
+				return false
+			}
+			passCnt++
+			t.Logf("lookupd: %v", w.lookupdHTTPAddrs)
+			if passCnt > 3 {
+				return true
+			}
+			return false
+		}()
+		if ret {
+			break
+		}
+	}
+	if cnt <= 0 || passCnt <= 0 {
+		t.Errorf("test failed")
+	}
+}
+
 func TestTopicProducerMgrWithTagDynamicTopic(t *testing.T) {
 	testTopicProducerMgrWithTag(t, true)
 }
