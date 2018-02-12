@@ -335,6 +335,16 @@ func (r *Consumer) ChangeMaxInFlight(maxInFlight int) {
 	}
 }
 
+func (r *Consumer) ConnectToSeeds() error {
+	for _, lookup := range r.config.LookupdSeeds {
+		err := r.ConnectToNSQLookupd(lookup)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ConnectToNSQLookupd adds an nsqlookupd address to the list for this Consumer instance.
 //
 // If it is the first to be added, it initiates an HTTP request to discover nsqd
@@ -450,7 +460,7 @@ exit:
 
 // return the next lookupd endpoint to query
 // keeping track of which one was last used
-func (r *Consumer) nextLookupdEndpoint() (string, string) {
+func (r *Consumer) nextLookupdEndpoint() (string, string, string) {
 	r.mtx.RLock()
 	if r.lookupdQueryIndex >= len(r.lookupdHTTPAddrs) {
 		r.lookupdQueryIndex = 0
@@ -483,7 +493,7 @@ func (r *Consumer) nextLookupdEndpoint() (string, string) {
 		v.Add("partition", strconv.Itoa(r.partition))
 	}
 	u.RawQuery = v.Encode()
-	return u.String(), listUrl.String()
+	return addr, u.String(), listUrl.String()
 }
 
 type metaInfo struct {
@@ -531,13 +541,37 @@ func getConnectionUID(addr string, pid int) string {
 //
 // initiate a connection to any new producers that are identified.
 func (r *Consumer) queryLookupd() {
-	endpoint, discoveryUrl := r.nextLookupdEndpoint()
+	addr, endpoint, discoveryUrl := r.nextLookupdEndpoint()
 	// discovery other lookupd nodes from current lookupd or from etcd
 	r.log(LogLevelDebug, "discovery nsqlookupd %s", discoveryUrl)
 	var lookupdList lookupListResp
 	err := apiRequestNegotiateV1("GET", discoveryUrl, nil, &lookupdList)
 	if err != nil {
 		r.log(LogLevelError, "error discovery nsqlookupd (%s) - %s", discoveryUrl, err)
+		if strings.Contains(strings.ToLower(err.Error()), "connection refused") &&
+			FindString(r.config.LookupdSeeds, addr) == -1 {
+			r.mtx.Lock()
+			// remove failed
+			r.log(LogLevelInfo, "removing failed lookup : %v", addr)
+			newLookupList := make([]string, 0)
+			for _, v := range r.lookupdHTTPAddrs {
+				if v == addr {
+					continue
+				} else {
+					newLookupList = append(newLookupList, v)
+				}
+			}
+			if len(newLookupList) > 0 {
+				r.lookupdHTTPAddrs = newLookupList
+			}
+			r.mtx.Unlock()
+			select {
+			case r.lookupdRecheckChan <- 1:
+				r.log(LogLevelInfo, "trigger tend for err: %v", err)
+			default:
+			}
+			return
+		}
 	} else {
 		for _, node := range lookupdList.LookupdNodes {
 			addr := net.JoinHostPort(node.NodeIp, node.HttpPort)

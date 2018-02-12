@@ -474,6 +474,15 @@ func (self *TopicPartProducerInfo) getSpecificPartitionInfo(pid int) AddrPartInf
 	return AddrPartInfo{}
 }
 
+func FindString(src []string, f string) int {
+	for i, v := range src {
+		if f == v {
+			return i
+		}
+	}
+	return -1
+}
+
 type RemoveProducerInfo struct {
 	producer *Producer
 	ts       time.Time
@@ -527,6 +536,16 @@ func NewTopicProducerMgr(topics []string, conf *Config) (*TopicProducerMgr, erro
 		mgr.topics[t] = NewTopicPartProducerInfo(metaInfo{}, false)
 	}
 	return mgr, nil
+}
+
+func (self *TopicProducerMgr) ConnectToSeeds() error {
+	for _, lookup := range self.config.LookupdSeeds {
+		err := self.ConnectToNSQLookupd(lookup)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (self *TopicProducerMgr) Stop() {
@@ -655,7 +674,8 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 	err := apiRequestNegotiateV1("GET", discoveryUrl, nil, &lookupdList)
 	if err != nil {
 		self.log(LogLevelError, "error discovery nsqlookupd (%s) - %s", discoveryUrl, err)
-		if strings.Contains(strings.ToLower(err.Error()), "connection refused") {
+		if strings.Contains(strings.ToLower(err.Error()), "connection refused") &&
+			FindString(self.config.LookupdSeeds, addr) == -1 {
 			self.mtx.Lock()
 			// remove failed
 			self.log(LogLevelInfo, "removing failed lookup : %v", addr)

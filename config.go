@@ -184,7 +184,11 @@ type Config struct {
 	Hasher             hash.Hash32
 	PubStrategy        PubStrategyType
 	EnableMultiplexing bool
-	DesiredTag	   string `opt:"desired_tag"`
+	DesiredTag         string `opt:"desired_tag"`
+	// seeds lookupd should be domain format (nsq.xxx.xxx:4160)
+	// and will not be removed if conection refused
+	// So it will always retry if not connected
+	LookupdSeeds []string `opt:"lookupd_seeds"`
 }
 
 // NewConfig returns a new default nsq configuration.
