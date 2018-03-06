@@ -339,7 +339,8 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 			ExtendSupport: true,
 		})
 
-		http.HandleFunc("/lookup", lookupdWrapper.lookupdWrap)
+		srvMux := http.NewServeMux()
+		srvMux.HandleFunc("/lookup", lookupdWrapper.lookupdWrap)
 		//http.ListenAndServe(lookupdAddrWrapper, nil)
 		l, err := net.Listen("tcp", lookupdAddrWrapper)
 		if err != nil {
@@ -351,7 +352,7 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 				l.Close()
 			}
 		}()
-		http.Serve(l, nil)
+		http.Serve(l, srvMux)
 	}()
 	<-time.After(2 * time.Second)
 	fmt.Printf("nsqlookupd starts.")
@@ -367,6 +368,7 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	if cb != nil {
 		cb(config)
 	}
+	config.LookupdPollInterval = time.Second
 	tag := config.DesiredTag
 	//rest desired tag to default
 	config.DesiredTag = ""
@@ -441,6 +443,7 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 	if config.TlsV1 {
 		topicName = topicName + "_tls"
 	}
+	config.LookupdPollInterval = time.Second
 	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
 	q, _ := NewConsumer(topicName, "ch", config)
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
@@ -589,6 +592,7 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	// so that the test wont timeout from backing off
 	config.MaxBackoffDuration = time.Millisecond * 50
 	config.MaxAttempts = 7
+	config.LookupdPollInterval = time.Second
 	if cb != nil {
 		cb(config)
 	}
