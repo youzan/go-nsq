@@ -764,6 +764,7 @@ func TestTopicProducerMgrRemoveNsqdNode(t *testing.T) {
 	}
 	w.producerMtx.Unlock()
 	time.Sleep(removingKeepTime)
+	time.Sleep(config.LookupdPollInterval)
 	w.producerMtx.Lock()
 	if len(w.producers) != len(usedPeers) {
 		t.Error("producer number not match used")
