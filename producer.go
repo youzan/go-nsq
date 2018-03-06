@@ -19,13 +19,14 @@ import (
 
 const (
 	MAX_PARTITION_NUM = 1024
-	MIN_RETRY_SLEEP   = time.Millisecond * 32
+	MIN_RETRY_SLEEP   = time.Millisecond * 8
 )
 
 var (
 	ErrTopicNotSet        = errors.New("topic is not set as producer")
 	ErrNoProducer         = errors.New("topic producer not found")
 	errMissingShardingKey = errors.New("missing sharding key for ordered publish")
+	removingKeepTime      = time.Minute * 10
 )
 
 type producerConn interface {
@@ -705,6 +706,8 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		}
 	}
 
+	allTopicParts := make([]AddrPartInfo, 0)
+	cleanProducers := make(map[string]*Producer)
 	for topicName, topicUrl := range topicQueryList {
 		if newTopic != "" {
 			if topicName != newTopic {
@@ -781,28 +784,9 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 			}
 		}
 
-		cleanProducers := make(map[string]*Producer)
 		self.producerMtx.Lock()
 		if len(newProducerInfo.allPartitions) > 0 {
-			for k, p := range self.producers {
-				found := false
-				for _, addrInfo := range newProducerInfo.allPartitions {
-					if p.addr == addrInfo.addr {
-						found = true
-						break
-					}
-				}
-				if !found {
-					self.log(LogLevelInfo, "mark producer %v for topic %v removing since not in lookup", p.addr, topicName)
-					delete(self.producers, k)
-					if _, ok := self.removingProducers[k]; ok {
-						continue
-					}
-					self.removingProducers[k] = &RemoveProducerInfo{producer: p, ts: time.Now()}
-				} else {
-					delete(self.removingProducers, k)
-				}
-			}
+			allTopicParts = append(allTopicParts, newProducerInfo.allPartitions...)
 		}
 		if changed {
 			for partID, addrInfo := range newProducerInfo.allPartitions {
@@ -824,22 +808,44 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 				delete(self.removingProducers, addr)
 			}
 		}
-		for k, p := range self.removingProducers {
-			if time.Since(p.ts) > time.Minute*10 {
-				self.log(LogLevelInfo, "removing producer %v for topic %v stopped", p.producer.addr, topicName)
-				delete(self.removingProducers, k)
-				cleanProducers[k] = p.producer
-			}
-		}
-
 		self.producerMtx.Unlock()
-		for _, p := range cleanProducers {
-			p.Stop()
-		}
 
 		self.topicMtx.Lock()
 		self.topics[topicName] = newProducerInfo
 		self.topicMtx.Unlock()
+	}
+	self.producerMtx.Lock()
+	if len(allTopicParts) > 0 {
+		for k, p := range self.producers {
+			found := false
+			for _, addrInfo := range allTopicParts {
+				if p.addr == addrInfo.addr {
+					found = true
+					break
+				}
+			}
+			if !found {
+				self.log(LogLevelInfo, "mark producer %v removing since not in lookup for all topics", p.addr)
+				delete(self.producers, k)
+				if _, ok := self.removingProducers[k]; ok {
+					continue
+				}
+				self.removingProducers[k] = &RemoveProducerInfo{producer: p, ts: time.Now()}
+			} else {
+				delete(self.removingProducers, k)
+			}
+		}
+	}
+	for k, p := range self.removingProducers {
+		if time.Since(p.ts) > removingKeepTime {
+			self.log(LogLevelInfo, "removing producer %v finally stopped", p.producer.addr)
+			delete(self.removingProducers, k)
+			cleanProducers[k] = p.producer
+		}
+	}
+	self.producerMtx.Unlock()
+	for _, p := range cleanProducers {
+		p.Stop()
 	}
 }
 

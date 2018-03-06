@@ -540,6 +540,246 @@ func TestTopicProducerMgrRemoveFailedLookupd(t *testing.T) {
 	}
 }
 
+func TestTopicProducerMgrRemoveNsqdNode(t *testing.T) {
+	// cases:
+	// 1. one topic, remove a node and test if removed
+	// 2. readd removed, test if added
+	// 3. two topic, one topic remove a node but another keep this node, test should keep
+	// 4. two topic, both topics removed the same node, test should remove this node
+	oldKeep := removingKeepTime
+	removingKeepTime = time.Second * 10
+	defer func() {
+		removingKeepTime = oldKeep
+	}()
+	stopC := make(chan struct{})
+	fakedLookup := ensureFakedLookup(t, "127.0.0.1:4165", stopC)
+	defer func() {
+		close(stopC)
+		time.Sleep(time.Second)
+	}()
+	topicName := "test_remove_node" + strconv.Itoa(int(time.Now().Unix()))
+	topicList := make([]string, 0)
+	for i := 0; i < 2; i++ {
+		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
+	}
+	var meta metaInfo
+	meta.PartitionNum = 2
+	meta.Replica = 2
+	allPeers := make([]*peerInfo, 0)
+	for i := 0; i < meta.PartitionNum*2; i++ {
+		var peer peerInfo
+		peer.BroadcastAddress = "127.0.0.1"
+		peer.Hostname = "test" + strconv.Itoa(i)
+		peer.HTTPPort = 4151 + i*100
+		peer.RemoteAddress = "127.0.0.1"
+		peer.TCPPort = 4150 + i*100
+		peer.Version = "1.0"
+		allPeers = append(allPeers, &peer)
+	}
+	usedPeers := make(map[string]*peerInfo)
+	for _, t := range topicList {
+		rsp := lookupResp{
+			Meta:       meta,
+			Partitions: make(map[string]*peerInfo),
+		}
+		for i := 0; i < meta.PartitionNum; i++ {
+			peer := allPeers[i]
+			rsp.Producers = append(rsp.Producers, peer)
+			rsp.Partitions[strconv.Itoa(i)] = peer
+			usedPeers[net.JoinHostPort(peer.BroadcastAddress, strconv.Itoa(peer.TCPPort))] = peer
+		}
+
+		fakedLookup.fakeResponse[t] = rsp
+	}
+	config := NewConfig()
+	config.LookupdSeeds = append(config.LookupdSeeds, "127.0.0.1:4165")
+	config.LookupdPollInterval = time.Second
+	initTopics := make([]string, 0)
+	initTopics = topicList
+	config.PubStrategy = PubRR
+	w, err := NewTopicProducerMgr(initTopics, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	w.ConnectToSeeds()
+	for _, tname := range topicList {
+		w.topicMtx.Lock()
+		parts, ok := w.topics[tname]
+		if !ok {
+			t.Errorf("topic %v producers not found", tname)
+			continue
+		}
+		for _, p := range parts.allPartitions {
+			_, ok := usedPeers[p.addr]
+			if !ok {
+				t.Errorf("unused peer in producer manager: %v", p)
+			}
+		}
+		w.topicMtx.Unlock()
+		w.producerMtx.Lock()
+		for addr, _ := range w.producers {
+			_, ok := usedPeers[addr]
+			if !ok {
+				t.Errorf("unused peer in producer manager: %v", addr)
+			}
+		}
+		if len(w.removingProducers) != 0 {
+			t.Errorf("removing nodes should be 0")
+		}
+		w.producerMtx.Unlock()
+	}
+	// change producer for partition
+	t0Resp := fakedLookup.fakeResponse[topicList[0]]
+	oldPeer := t0Resp.Partitions["0"]
+	oldAddr := net.JoinHostPort(oldPeer.BroadcastAddress, strconv.Itoa(oldPeer.TCPPort))
+	t0Resp.Partitions["0"] = allPeers[meta.PartitionNum]
+	newPeer := t0Resp.Partitions["0"]
+	newAddr := net.JoinHostPort(newPeer.BroadcastAddress, strconv.Itoa(newPeer.TCPPort))
+	usedPeers[newAddr] = newPeer
+	time.Sleep(config.LookupdPollInterval * 2)
+	w.topicMtx.Lock()
+	parts, ok := w.topics[topicList[0]]
+	if !ok {
+		t.Errorf("topic %v producers not found", topicList[0])
+	}
+	for _, p := range parts.allPartitions {
+		_, ok := usedPeers[p.addr]
+		if !ok {
+			t.Errorf("unused peer in producer manager: %v", p)
+		}
+	}
+	w.topicMtx.Unlock()
+	w.producerMtx.Lock()
+	if len(w.producers) != len(usedPeers) {
+		t.Error("producer number not match used")
+	}
+	for addr, _ := range w.producers {
+		_, ok := usedPeers[addr]
+		if !ok {
+			t.Errorf("unused peer in producer manager: %v", addr)
+		}
+	}
+	_, ok = w.removingProducers[oldAddr]
+	if ok {
+		t.Errorf("old node should not be in removing nodes since another topic is used")
+	}
+	w.producerMtx.Unlock()
+	t0Resp = fakedLookup.fakeResponse[topicList[1]]
+	oldPeer = t0Resp.Partitions["0"]
+	oldAddr = net.JoinHostPort(oldPeer.BroadcastAddress, strconv.Itoa(oldPeer.TCPPort))
+	// both topic removed this node
+	delete(usedPeers, oldAddr)
+	t0Resp.Partitions["0"] = allPeers[meta.PartitionNum]
+	newPeer = t0Resp.Partitions["0"]
+	newAddr = net.JoinHostPort(newPeer.BroadcastAddress, strconv.Itoa(newPeer.TCPPort))
+	usedPeers[newAddr] = newPeer
+	time.Sleep(config.LookupdPollInterval * 2)
+
+	w.topicMtx.Lock()
+	parts, ok = w.topics[topicList[0]]
+	if !ok {
+		t.Errorf("topic %v producers not found", topicList[0])
+	}
+	for _, p := range parts.allPartitions {
+		_, ok := usedPeers[p.addr]
+		if !ok {
+			t.Errorf("unused peer in producer manager: %v", p)
+		}
+	}
+	w.topicMtx.Unlock()
+	w.producerMtx.Lock()
+
+	if len(w.producers) != len(usedPeers) {
+		t.Error("producer number not match used")
+	}
+
+	for addr, _ := range w.producers {
+		_, ok := usedPeers[addr]
+		if !ok {
+			t.Errorf("unused peer in producer manager: %v", addr)
+		}
+	}
+	_, ok = w.removingProducers[oldAddr]
+	if !ok {
+		t.Errorf("old node should be in removing nodes since both topic removed")
+	}
+	w.producerMtx.Unlock()
+	time.Sleep(removingKeepTime)
+
+	w.producerMtx.Lock()
+	for addr, _ := range w.producers {
+		if addr == oldAddr {
+			t.Errorf("unused peer in producer manager: %v", addr)
+		}
+	}
+	_, ok = w.removingProducers[oldAddr]
+	if ok {
+		t.Errorf("old node should be cleaned")
+	}
+	w.producerMtx.Unlock()
+	// readd
+	usedPeers = make(map[string]*peerInfo)
+	for _, t := range topicList {
+		rsp := lookupResp{
+			Meta:       meta,
+			Partitions: make(map[string]*peerInfo),
+		}
+		for i := 0; i < meta.PartitionNum; i++ {
+			peer := allPeers[i]
+			rsp.Producers = append(rsp.Producers, peer)
+			rsp.Partitions[strconv.Itoa(i)] = peer
+			usedPeers[net.JoinHostPort(peer.BroadcastAddress, strconv.Itoa(peer.TCPPort))] = peer
+		}
+		fakedLookup.fakeResponse[t] = rsp
+	}
+	time.Sleep(config.LookupdPollInterval * 2)
+	w.topicMtx.Lock()
+	parts, ok = w.topics[topicList[0]]
+	if !ok {
+		t.Errorf("topic %v producers not found", topicList[0])
+	}
+	if len(parts.allPartitions) != meta.PartitionNum {
+		t.Error("part info length not match partition number")
+	}
+	for _, p := range parts.allPartitions {
+		_, ok := usedPeers[p.addr]
+		if !ok {
+			t.Errorf("unused peer in producer manager: %v", p)
+		}
+	}
+	w.topicMtx.Unlock()
+	w.producerMtx.Lock()
+	if len(w.producers) != len(usedPeers) {
+		t.Error("producer number not match used")
+	}
+	for addr, _ := range w.producers {
+		_, ok := usedPeers[addr]
+		if !ok {
+			t.Errorf("unused peer in producer manager: %v", addr)
+		}
+	}
+	if len(w.removingProducers) == 0 {
+		t.Errorf("removing should not be empty")
+	}
+	w.producerMtx.Unlock()
+	time.Sleep(removingKeepTime)
+	w.producerMtx.Lock()
+	if len(w.producers) != len(usedPeers) {
+		t.Error("producer number not match used")
+	}
+	for addr, _ := range w.producers {
+		_, ok := usedPeers[addr]
+		if !ok {
+			t.Errorf("unused peer in producer manager: %v", addr)
+		}
+	}
+	if len(w.removingProducers) != 0 {
+		t.Errorf("removing should be empty")
+	}
+	w.producerMtx.Unlock()
+}
+
 func TestTopicProducerMgrWithTagDynamicTopic(t *testing.T) {
 	testTopicProducerMgrWithTag(t, true)
 }

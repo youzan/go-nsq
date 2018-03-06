@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -31,6 +32,7 @@ type NsqdlookupdWrapper struct {
 	lookupdAddr     string
 	metaInfoWrapper metaInfo
 	t               *testing.T
+	fakeResponse    map[string]lookupResp
 }
 
 func NewNsqlookupdWrapper(t *testing.T, addr string, metaInfo metaInfo) *NsqdlookupdWrapper {
@@ -38,8 +40,25 @@ func NewNsqlookupdWrapper(t *testing.T, addr string, metaInfo metaInfo) *Nsqdloo
 		lookupdAddr:     addr,
 		metaInfoWrapper: metaInfo,
 		t:               t,
+		fakeResponse:    make(map[string]lookupResp),
 	}
 	return proxy
+}
+
+func (self *NsqdlookupdWrapper) fakeLookupdWrap(w http.ResponseWriter, r *http.Request) {
+	reqParams, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		self.t.Fatalf("error parse query %v", r.URL.RawQuery)
+	}
+	topic := reqParams.Get("topic")
+
+	nodes, _ := self.fakeResponse[topic]
+	jsonBytes, err := json.Marshal(&nodes)
+	if err != nil {
+		self.t.Fatalf("error parse lookup resp")
+	}
+	w.Header().Add("X-Nsq-Content-Type", "nsq; version=1.0")
+	w.Write(jsonBytes)
 }
 
 func (self *NsqdlookupdWrapper) lookupdWrap(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +91,32 @@ func (self *NsqdlookupdWrapper) lookupdWrap(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Add("X-Nsq-Content-Type", "nsq; version=1.0")
 	w.Write(jsonBytes)
+}
+
+func ensureFakedLookup(t *testing.T, addr string, stopC chan struct{}) *NsqdlookupdWrapper {
+	lookupdWrapper := NewNsqlookupdWrapper(t, "127.0.0.1:4161", metaInfo{
+		PartitionNum:  1,
+		Replica:       1,
+		ExtendSupport: true,
+	})
+
+	go func() {
+		srvMux := http.NewServeMux()
+		srvMux.HandleFunc("/lookup", lookupdWrapper.fakeLookupdWrap)
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			select {
+			case <-stopC:
+				l.Close()
+			}
+		}()
+		http.Serve(l, srvMux)
+	}()
+	<-time.After(time.Second)
+	return lookupdWrapper
 }
 
 var nullLogger = log.New(ioutil.Discard, "", log.LstdFlags)
@@ -283,7 +328,11 @@ func TestConsumerSubToExtTopicLookupd(t *testing.T) {
 
 func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	lookupdAddrWrapper := "127.0.0.1:4162"
+	stopCh := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		lookupdWrapper := NewNsqlookupdWrapper(t, "127.0.0.1:4161", metaInfo{
 			PartitionNum:  1,
 			Replica:       1,
@@ -291,7 +340,18 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 		})
 
 		http.HandleFunc("/lookup", lookupdWrapper.lookupdWrap)
-		http.ListenAndServe(lookupdAddrWrapper, nil)
+		//http.ListenAndServe(lookupdAddrWrapper, nil)
+		l, err := net.Listen("tcp", lookupdAddrWrapper)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			select {
+			case <-stopCh:
+				l.Close()
+			}
+		}()
+		http.Serve(l, nil)
 	}()
 	<-time.After(2 * time.Second)
 	fmt.Printf("nsqlookupd starts.")
@@ -355,6 +415,8 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	if h.messagesFailed != 2 {
 		t.Fatal("failed message not done")
 	}
+	close(stopCh)
+	wg.Wait()
 }
 
 func consumerTagTest(t *testing.T, cb func(c *Config)) {
