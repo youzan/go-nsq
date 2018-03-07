@@ -26,6 +26,7 @@ type MyTestHandler struct {
 	messagesReceived int
 	messagesFailed   int
 	tag              string
+	expectFailed     int
 }
 
 type NsqdlookupdWrapper struct {
@@ -123,12 +124,16 @@ var nullLogger = log.New(ioutil.Discard, "", log.LstdFlags)
 
 func (h *MyTestHandler) LogFailedMessage(message *Message) {
 	h.messagesFailed++
-	h.q.Stop()
+	h.t.Logf("log fail message: %v, %v", h.messagesReceived, GetNewMessageID(message.ID[:]))
+	if h.messagesFailed >= h.expectFailed {
+		h.q.Stop()
+	}
 }
 
 func (h *MyTestHandler) HandleMessage(message *Message) error {
 	if string(message.Body) == "TOBEFAILED" {
 		h.messagesReceived++
+		h.t.Logf("received fail message: %v, %v", h.messagesReceived, GetNewMessageID(message.ID[:]))
 		return errors.New("fail this message")
 	}
 
@@ -151,6 +156,7 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 		}
 	}
 	h.messagesReceived++
+	h.t.Logf("received message: %v, %v", h.messagesReceived, GetNewMessageID(message.ID[:]))
 	return nil
 }
 
@@ -391,8 +397,9 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 
 	h := &MyTestHandler{
-		t: t,
-		q: q,
+		t:            t,
+		q:            q,
+		expectFailed: 2,
 	}
 	q.AddHandler(h)
 	q.ConnectToNSQLookupd(lookupdAddrWrapper)
@@ -414,10 +421,10 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	case <-q.StopChan:
 	}
 
-	if h.messagesReceived != h.messagesSent+h.messagesFailed*int(config.MaxAttempts-1) || h.messagesSent != 8 {
+	if h.messagesReceived != h.messagesSent+h.messagesFailed*int(config.MaxAttempts-1) {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
 	}
-	if h.messagesFailed != 2 {
+	if h.messagesFailed != h.expectFailed {
 		t.Fatal("failed message not done")
 	}
 	close(stopCh)
@@ -456,9 +463,10 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 
 	h := &MyTestHandler{
-		t:   t,
-		q:   q,
-		tag: tag,
+		t:            t,
+		q:            q,
+		tag:          tag,
+		expectFailed: 1,
 	}
 	q.AddHandler(h)
 
@@ -486,8 +494,9 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 	qn.SetLogger(newTestLogger(t), LogLevelDebug)
 
 	hn := &MyTestHandler{
-		t: t,
-		q: qn,
+		t:            t,
+		q:            qn,
+		expectFailed: 1,
 	}
 	qn.AddHandler(hn)
 	err = qn.ConnectToNSQD(addr, 0)
@@ -562,10 +571,10 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 			h.messagesReceived+h.messagesFailed)
 	}
 
-	if h.messagesReceived != h.messagesSent+h.messagesFailed*int(config.MaxAttempts-1) || h.messagesSent != 4 {
+	if h.messagesReceived != h.messagesSent+h.messagesFailed*int(config.MaxAttempts-1) {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
 	}
-	if h.messagesFailed != 1 {
+	if h.messagesFailed != h.expectFailed {
 		t.Fatal("failed message not done")
 	}
 
@@ -581,10 +590,10 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 			hn.messagesReceived+hn.messagesFailed)
 	}
 
-	if hn.messagesReceived != hn.messagesSent+hn.messagesFailed*(int(config.MaxAttempts)-1) || hn.messagesSent != 4 {
+	if hn.messagesReceived != hn.messagesSent+hn.messagesFailed*(int(config.MaxAttempts)-1) {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", hn.messagesReceived, hn.messagesSent)
 	}
-	if hn.messagesFailed != 1 {
+	if hn.messagesFailed != hn.expectFailed {
 		t.Fatal("failed message not done")
 	}
 }
@@ -617,8 +626,9 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 
 	h := &MyTestHandler{
-		t: t,
-		q: q,
+		t:            t,
+		q:            q,
+		expectFailed: 1,
 	}
 	q.AddHandler(h)
 
@@ -692,10 +702,10 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 			h.messagesReceived+h.messagesFailed)
 	}
 
-	if h.messagesReceived != h.messagesSent+int(config.MaxAttempts)-1 || h.messagesSent != 4 {
+	if h.messagesReceived != h.messagesSent+int(config.MaxAttempts)-1 {
 		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
 	}
-	if h.messagesFailed != 1 {
+	if h.messagesFailed != h.expectFailed {
 		t.Fatal("failed message not done")
 	}
 }
