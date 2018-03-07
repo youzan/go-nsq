@@ -180,6 +180,7 @@ func EnsureTopicWithExt(t *testing.T, port int, topic string, part int, ext bool
 	if frameType == FrameTypeError {
 		t.Fatal(string(data))
 	}
+	time.Sleep(time.Second)
 }
 
 func EnsureTopic(t *testing.T, port int, topic string, part int) {
@@ -204,6 +205,7 @@ func EnsureTopic(t *testing.T, port int, topic string, part int) {
 	if frameType == FrameTypeError {
 		t.Fatal(string(data))
 	}
+	time.Sleep(time.Second)
 }
 
 func SendMessage(t *testing.T, port int, topic string, method string, body []byte) {
@@ -363,6 +365,7 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
 	// so that the test can simulate reaching max requeues and a call to LogFailedMessage
 	config.DefaultRequeueDelay = 0
+	config.MaxAttempts = 5
 	// so that the test wont timeout from backing off
 	config.MaxBackoffDuration = time.Millisecond * 50
 	if cb != nil {
@@ -382,6 +385,8 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 		topicName = topicName + "_tls"
 	}
 	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	EnsureTopicWithExt(t, 4150, topicName, 0, true)
+
 	q, _ := NewConsumer(topicName, "ch", config)
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 
@@ -390,9 +395,6 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 		q: q,
 	}
 	q.AddHandler(h)
-
-	EnsureTopicWithExt(t, 4150, topicName, 0, true)
-
 	q.ConnectToNSQLookupd(lookupdAddrWrapper)
 
 	SendTagedMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`), tag)
@@ -408,6 +410,7 @@ func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
 	select {
 	case <-time.After(time.Second * 20):
 		t.Errorf("tag consumer should stop after timeout")
+		q.Stop()
 	case <-q.StopChan:
 	}
 
@@ -430,6 +433,7 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 	config.DefaultRequeueDelay = 0
 	// so that the test wont timeout from backing off
 	config.MaxBackoffDuration = time.Millisecond * 50
+	config.MaxAttempts = 5
 	if cb != nil {
 		cb(config)
 	}
@@ -444,7 +448,10 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 		topicName = topicName + "_tls"
 	}
 	config.LookupdPollInterval = time.Second
+
 	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	EnsureTopicWithExt(t, 4150, topicName, 0, true)
+
 	q, _ := NewConsumer(topicName, "ch", config)
 	q.SetLogger(newTestLogger(t), LogLevelDebug)
 
@@ -454,8 +461,6 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 		tag: tag,
 	}
 	q.AddHandler(h)
-
-	EnsureTopicWithExt(t, 4150, topicName, 0, true)
 
 	addr := "127.0.0.1:4150"
 	//test with invalid tag
@@ -534,12 +539,14 @@ func consumerTagTest(t *testing.T, cb func(c *Config)) {
 	select {
 	case <-time.After(time.Second * 20):
 		t.Errorf("tag consumer should stop after timeout")
+		q.Stop()
 	case <-q.StopChan:
 	}
 
 	select {
 	case <-time.After(time.Second * 20):
 		t.Errorf("tag consumer should stop after timeout")
+		qn.Stop()
 	case <-qn.StopChan:
 	}
 

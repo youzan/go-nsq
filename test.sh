@@ -32,7 +32,7 @@ nsqd --sync-timeout=100ms --broadcast-address=127.0.0.1 --alsologtostderr=true -
 NSQD_PID=$!
 
 sleep 10
-tail -f $LOOKUP_LOGFILE &
+tail -f $NSQD_LOGFILE &
 
 cleanup() {
     echo "killing nsqd PID $NSQD_PID"
