@@ -42,6 +42,7 @@ type Handler interface {
 // 		// handle the message
 // 	}))
 type HandlerFunc func(message *Message) error
+type FailHandlerFunc func(message *Message)
 
 // HandleMessage implements the Handler interface
 func (h HandlerFunc) HandleMessage(m *Message) error {
@@ -1338,7 +1339,27 @@ func (r *Consumer) AddConcurrentHandlers(handler Handler, concurrency int) {
 	}
 }
 
+func (r *Consumer) AddConcurrentHandlerFuncs(handler HandlerFunc, failHandler FailHandlerFunc, concurrency int) {
+	if atomic.LoadInt32(&r.connectedFlag) == 1 {
+		panic("already connected")
+	}
+
+	atomic.AddInt32(&r.runningHandlers, int32(concurrency))
+	for i := 0; i < concurrency; i++ {
+		go r.handlerFuncLoop(handler, failHandler)
+	}
+}
+
 func (r *Consumer) handlerLoop(handler Handler) {
+	failedHandler, ok := handler.(FailedMessageLogger)
+	var f FailHandlerFunc
+	if ok {
+		f = failedHandler.LogFailedMessage
+	}
+	r.handlerFuncLoop(handler.HandleMessage, f)
+}
+
+func (r *Consumer) handlerFuncLoop(handlerFunc HandlerFunc, failedFunc FailHandlerFunc) {
 	r.log(LogLevelDebug, "starting Handler")
 
 	for {
@@ -1347,12 +1368,12 @@ func (r *Consumer) handlerLoop(handler Handler) {
 			goto exit
 		}
 
-		if r.shouldFailMessage(message, handler) {
+		if r.shouldFailMessage(message, failedFunc) {
 			message.Finish()
 			continue
 		}
 
-		err := handler.HandleMessage(message)
+		err := handlerFunc(message)
 		if err != nil {
 			r.log(LogLevelError, "Handler returned error (%s) for msg %s", err, message.ID)
 			if !message.IsAutoResponseDisabled() {
@@ -1373,15 +1394,14 @@ exit:
 	}
 }
 
-func (r *Consumer) shouldFailMessage(message *Message, handler interface{}) bool {
+func (r *Consumer) shouldFailMessage(message *Message, handlerFunc FailHandlerFunc) bool {
 	// message passed the max number of attempts
 	if r.config.MaxAttempts > 0 && message.Attempts > r.config.MaxAttempts {
 		r.log(LogLevelWarning, "msg %s attempted %d times, giving up",
 			message.ID, message.Attempts)
 
-		logger, ok := handler.(FailedMessageLogger)
-		if ok {
-			logger.LogFailedMessage(message)
+		if handlerFunc != nil {
+			handlerFunc(message)
 		}
 
 		return true
