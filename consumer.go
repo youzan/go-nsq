@@ -593,7 +593,7 @@ func (r *Consumer) queryLookupd() {
 
 	var nsqdAddrs []string
 	partInfo := make(map[string]map[int]struct{})
-	r.log(LogLevelInfo, "producer partitions: %v", len(data.Partitions))
+	r.log(LogLevelDebug, "producer partitions: %v", len(data.Partitions))
 
 	for pidStr, partProducer := range data.Partitions {
 		pid, err := strconv.Atoi(pidStr)
