@@ -1041,7 +1041,7 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal) {
 	if r.backoffCounter == 0 && backoffUpdated {
 		// exit backoff
 		count := r.perConnMaxInFlight()
-		r.log(LogLevelWarning, "exiting backoff, returning all to RDY %d", count)
+		r.log(LogLevelDebug, "exiting backoff, returning all to RDY %d", count)
 		for _, c := range r.conns() {
 			r.updateRDY(c, count)
 		}
@@ -1053,7 +1053,7 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal) {
 			backoffDuration = r.config.MaxBackoffDuration
 		}
 
-		r.log(LogLevelWarning, "backing off for %.04f seconds (backoff level %d), setting all to RDY 0",
+		r.log(LogLevelInfo, "backing off for %.04f seconds (backoff level %d), setting all to RDY 0",
 			backoffDuration.Seconds(), backoffCounter)
 
 		// send RDY 0 immediately (to *all* connections)
@@ -1089,7 +1089,7 @@ func (r *Consumer) resume() {
 	r.rngMtx.Unlock()
 	choice := conns[idx]
 
-	r.log(LogLevelWarning,
+	r.log(LogLevelDebug,
 		"(%s) backoff timeout expired, sending RDY 1",
 		choice.String())
 
