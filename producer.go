@@ -196,6 +196,11 @@ func (w *Producer) PublishAsync(topic string, body []byte, doneChan chan *Produc
 	return w.sendCommandAsync(Publish(topic, body), doneChan, args)
 }
 
+func (w *Producer) PublishWithPartitionAsync(topic string, partition string, body []byte, doneChan chan *ProducerTransaction,
+args ...interface{}) error {
+	return w.sendCommandAsync(PublishWithPart(topic, partition, body), doneChan, args)
+}
+
 // MultiPublishAsync publishes a slice of message bodies to the specified topic
 // but does not wait for the response from `nsqd`.
 //
@@ -354,9 +359,6 @@ func (w *Producer) router() {
 	for {
 		select {
 		case t := <-w.transactionChan:
-			if testingSendTimeout {
-				continue
-			}
 			w.transactions = append(w.transactions, t)
 			err := w.conn.WriteCommand(t.cmd)
 			if err != nil {
@@ -610,7 +612,6 @@ type TopicProducerMgr struct {
 	lookupdRecheckChan chan int
 	newTopicChan       chan string
 	newTopicRspChan    chan int
-	backgroundBuffer   chan *backgroundCommand
 }
 
 // use part=-1 to handle all partitions of topic
@@ -977,6 +978,50 @@ func (self *TopicProducerMgr) lookupLoop() {
 	}
 }
 
+func (self *TopicProducerMgr) getNextProducerAddrWithPartitionId(partProducerInfo *TopicPartProducerInfo, pId int) (int, string) {
+	addrInfo := AddrPartInfo{"", -1}
+	if pId < -1 {
+		self.log(LogLevelError, "pass in partition id invalid: %v", pId)
+		return -1, ""
+	}
+	length := len(partProducerInfo.allPartitions)
+	if length == 0 {
+		return -1, ""
+	} else if length == 1 && pId == -1 {
+		addrInfo = partProducerInfo.getPartitionInfo(0)
+		return addrInfo.pid, addrInfo.addr
+	}
+	retry := 0
+	index := uint32(0)
+	for addrInfo.addr == "" {
+		if pId == -1 {
+			if self.pubStrategy == PubRR {
+				if retry >= length {
+					break
+				}
+				index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
+				addrInfo = partProducerInfo.getPartitionInfo(index % uint32(len(partProducerInfo.allPartitions)))
+				retry++
+			} else {
+				// not supported strategy
+				return -1, ""
+			}
+		} else {
+			if !partProducerInfo.isMetaValid || partProducerInfo.meta.PartitionNum <= 0 {
+				self.log(LogLevelError, "partition meta info invalid: %v", partProducerInfo.meta)
+				return -1, ""
+			}
+			parNum := partProducerInfo.meta.PartitionNum
+			if pId >= parNum {
+				self.log(LogLevelError, "pass in partition id: %v execeed max value: %v", pId, parNum)
+			}
+			addrInfo = partProducerInfo.getSpecificPartitionInfo(pId)
+			break
+		}
+	}
+	return addrInfo.pid, addrInfo.addr
+}
+
 func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartProducerInfo, partitionKey []byte) (int, string) {
 	addrInfo := AddrPartInfo{"", -1}
 	length := len(partProducerInfo.allPartitions)
@@ -1095,6 +1140,44 @@ func (self *TopicProducerMgr) hasAnyProducer(topic string) bool {
 	return false
 }
 
+func (self *TopicProducerMgr) getProducerWithPartitionId(topic string, pId int) (*Producer, int, error) {
+	self.topicMtx.RLock()
+	partProducerInfo, ok := self.topics[topic]
+	self.topicMtx.RUnlock()
+	if !ok {
+		self.newTopicChan <- topic
+		select {
+		case <-self.newTopicRspChan:
+			self.topicMtx.RLock()
+			partProducerInfo, ok = self.topics[topic]
+			self.topicMtx.RUnlock()
+			if !ok {
+				return nil, -1, ErrTopicNotSet
+			}
+		}
+	}
+	pid, addr := self.getNextProducerAddrWithPartitionId(partProducerInfo, pId)
+	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pid, addr)
+	if addr == "" {
+		select {
+		case self.lookupdRecheckChan <- 1:
+		default:
+		}
+		return nil, pid, ErrNoProducer
+	}
+	self.producerMtx.RLock()
+	producer, ok := self.producers[addr]
+	self.producerMtx.RUnlock()
+	if !ok {
+		removed, ok := self.removingProducers[addr]
+		if !ok {
+			return nil, pid, ErrNoProducer
+		}
+		producer = removed.producer
+	}
+	return producer, pid, nil
+}
+
 func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*Producer, int, error) {
 	self.topicMtx.RLock()
 	partProducerInfo, ok := self.topics[topic]
@@ -1144,6 +1227,16 @@ func (self *TopicProducerMgr) PublishAsync(topic string, body []byte, doneChan c
 	}, args)
 }
 
+func (self *TopicProducerMgr) PublishAsyncWithPartitionId(topic string, partitionId int, body []byte, ext *MsgExt, doneChan chan *ProducerTransaction,
+args ...interface{}) error {
+	return self.doCommandAsyncWithRetryAndPartitionId(topic, partitionId, doneChan, func(pid int) (*Command, error) {
+		if pid < 0 {
+			return nil, errors.New("pub need partition id")
+		}
+		return PublishWithJsonExt(topic, strconv.Itoa(pid), body, ext.ToJson())
+	}, args)
+}
+
 func (self *TopicProducerMgr) PublishAsyncWithJsonExt(topic string, body []byte, ext *MsgExt, doneChan chan *ProducerTransaction,
 	args ...interface{}) error {
 	return self.doCommandAsyncWithRetry(topic, nil, doneChan, func(pid int) (*Command, error) {
@@ -1163,6 +1256,46 @@ func (self *TopicProducerMgr) MultiPublishAsync(topic string, body [][]byte, don
 		}
 		return MultiPublishWithPart(topic, strconv.Itoa(pid), body)
 	}, args)
+}
+
+func (self *TopicProducerMgr) doCommandAsyncWithRetryAndPartitionId(topic string, pId int,
+doneChan chan *ProducerTransaction,
+commandFunc func(pid int) (*Command, error), args []interface{}) error {
+	retry := uint32(0)
+	var err error
+	var producer *Producer
+	pid := -1
+
+	for retry < 3 {
+		retry++
+		producer, pid, err = self.getProducerWithPartitionId(topic, pId)
+		if err != nil {
+			if err == ErrNoProducer {
+				self.log(LogLevelInfo, "No producer for topic %v", topic)
+				time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+				continue
+			} else {
+				break
+			}
+		}
+
+		cmd, err := commandFunc(pid)
+		if err != nil {
+			return err
+		}
+		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
+		err = producer.sendCommandAsync(cmd, doneChan, args)
+		if err != nil {
+			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
+			if atomic.LoadInt32(&producer.failedCnt) > 3 {
+				self.removeProducer(producer.addr)
+			}
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+		} else {
+			break
+		}
+	}
+	return err
 }
 
 func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, partitionKey []byte,
@@ -1267,6 +1400,17 @@ func (self *TopicProducerMgr) PublishWithExtAndRetryBackground(topic string, bod
 
 func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
 	_, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
+		if pid < 0 || pid == OLD_VERSION_PID {
+			// pub to old nsqd that not support partition
+			return Publish(topic, body), nil
+		}
+		return PublishWithPart(topic, strconv.Itoa(pid), body), nil
+	})
+	return err
+}
+
+func (self *TopicProducerMgr) PublishWithPartition(topic string, partition int, body []byte) error {
+	_, err := self.doCommandWithRetryAndPartition(topic, partition, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return Publish(topic, body), nil
@@ -1469,6 +1613,53 @@ func (self *TopicProducerMgr) MultiPublishAndTrace(topic string, traceIDList []u
 	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
 	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
 	return id, offset, rawSize, err
+}
+
+func (self *TopicProducerMgr) doCommandWithRetryAndPartition(topic string, partition int,
+commandFunc func(pid int) (*Command, error)) ([]byte, error) {
+	retry := uint32(0)
+	var err error
+	var producer *Producer
+	var resp []byte
+	pid := -1
+	for retry < 3 {
+		retry++
+		producer, pid, err = self.getProducerWithPartitionId(topic, partition)
+		if err != nil {
+			if err == ErrNoProducer {
+				self.log(LogLevelInfo, "No producer for topic %v", topic)
+				time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+				continue
+			} else {
+				break
+			}
+		}
+		cmd, err := commandFunc(pid)
+		if err != nil {
+			self.log(LogLevelError, "get command err: %v", err)
+			return nil, err
+		}
+		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
+		resp, err = producer.sendCommand(cmd)
+		if err != nil {
+			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
+			if atomic.LoadInt32(&producer.failedCnt) > 3 {
+				self.removeProducer(producer.addr)
+			} else if IsFailedOnNotLeader(err) || IsFailedOnNotWritable(err) ||
+				IsTopicNotExist(err) {
+				self.removeProducerForTopic(topic, pid, producer.addr)
+			}
+			if self.hasAnyProducer(topic) {
+				go self.TriggerCheckForError(err, time.Second*time.Duration(retry+1))
+			} else {
+				self.TriggerCheckForError(err, time.Millisecond*100*time.Duration(retry))
+			}
+			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
+		} else {
+			break
+		}
+	}
+	return resp, err
 }
 
 func (self *TopicProducerMgr) doCommandWithBackgroundRetry(topic string, partitionKey []byte,

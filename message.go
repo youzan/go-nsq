@@ -47,7 +47,7 @@ type Message struct {
 	Attempts  uint16
 
 	NSQDAddress string
-
+	Partition string
 	Delegate MessageDelegate
 
 	autoResponseDisabled int32
