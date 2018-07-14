@@ -2,6 +2,7 @@ package nsq
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -25,8 +26,11 @@ const (
 var (
 	ErrTopicNotSet        = errors.New("topic is not set as producer")
 	ErrNoProducer         = errors.New("topic producer not found")
+	ErrRetryBackground    = errors.New("retrying in background")
 	errMissingShardingKey = errors.New("missing sharding key for ordered publish")
 	removingKeepTime      = time.Minute * 10
+	testingTimeout        = false
+	testingSendTimeout    = false
 )
 
 type producerConn interface {
@@ -79,9 +83,16 @@ type ProducerTransaction struct {
 	ResponseData []byte
 }
 
-func (t *ProducerTransaction) finish() {
+func (t *ProducerTransaction) finish(stop chan int) {
 	if t.doneChan != nil {
-		t.doneChan <- t
+		select {
+		case t.doneChan <- t:
+		default:
+			select {
+			case <-t.doneChan:
+			case <-stop:
+			}
+		}
 	}
 }
 
@@ -219,18 +230,44 @@ func (w *Producer) MultiPublish(topic string, body [][]byte) error {
 	return err
 }
 
-func (w *Producer) sendCommand(cmd *Command) ([]byte, error) {
+func (w *Producer) sendCommandWithContext(ctx context.Context, cmd *Command) ([]byte, error) {
 	doneChan := make(chan *ProducerTransaction)
-	err := w.sendCommandAsync(cmd, doneChan, nil)
+	err := w.sendCommandAsyncWithContext(ctx, cmd, doneChan, nil)
 	if err != nil {
 		close(doneChan)
 		return nil, err
 	}
-	t := <-doneChan
-	return t.ResponseData, t.Error
+	select {
+	case <-ctx.Done():
+		err := errors.New("pub failed : " + ctx.Err().Error())
+		return nil, err
+	case t := <-doneChan:
+		return t.ResponseData, t.Error
+	}
+}
+
+func (w *Producer) sendCommand(cmd *Command) ([]byte, error) {
+	ctx := context.Background()
+	if w.config.PubTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, w.config.PubTimeout)
+		defer cancel()
+	}
+	return w.sendCommandWithContext(ctx, cmd)
 }
 
 func (w *Producer) sendCommandAsync(cmd *Command, doneChan chan *ProducerTransaction,
+	args []interface{}) error {
+	ctx := context.Background()
+	if w.config.PubTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, w.config.PubTimeout)
+		defer cancel()
+	}
+	return w.sendCommandAsyncWithContext(ctx, cmd, doneChan, args)
+}
+
+func (w *Producer) sendCommandAsyncWithContext(ctx context.Context, cmd *Command, doneChan chan *ProducerTransaction,
 	args []interface{}) error {
 	// keep track of how many outstanding producers we're dealing with
 	// in order to later ensure that we clean them all up...
@@ -254,6 +291,8 @@ func (w *Producer) sendCommandAsync(cmd *Command, doneChan chan *ProducerTransac
 	case w.transactionChan <- t:
 	case <-w.exitChan:
 		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	return nil
@@ -315,6 +354,9 @@ func (w *Producer) router() {
 	for {
 		select {
 		case t := <-w.transactionChan:
+			if testingSendTimeout {
+				continue
+			}
 			w.transactions = append(w.transactions, t)
 			err := w.conn.WriteCommand(t.cmd)
 			if err != nil {
@@ -349,14 +391,14 @@ func (w *Producer) popTransaction(frameType int32, data []byte) {
 	} else {
 		t.ResponseData = data
 	}
-	t.finish()
+	t.finish(w.exitChan)
 }
 
 func (w *Producer) transactionCleanup() {
 	// clean up transactions we can easily account for
 	for _, t := range w.transactions {
 		t.Error = ErrNotConnected
-		t.finish()
+		t.finish(w.exitChan)
 	}
 	w.transactions = w.transactions[:0]
 
@@ -367,7 +409,7 @@ func (w *Producer) transactionCleanup() {
 		select {
 		case t := <-w.transactionChan:
 			t.Error = ErrNotConnected
-			t.finish()
+			t.finish(w.exitChan)
 		default:
 			// keep spinning until there are 0 concurrent producers
 			if atomic.LoadInt32(&w.concurrentProducers) == 0 {
@@ -393,10 +435,16 @@ func (w *Producer) log(lvl LogLevel, line string, args ...interface{}) {
 	logger.Output(2, fmt.Sprintf("%-4s %3d %s", lvl, w.id, fmt.Sprintf(line, args...)))
 }
 
-func (w *Producer) onConnResponse(c *Conn, data []byte) { w.responseChan <- data }
-func (w *Producer) onConnError(c *Conn, data []byte)    { w.errorChan <- data }
-func (w *Producer) onConnHeartbeat(c *Conn)             {}
-func (w *Producer) onConnIOError(c *Conn, err error)    { w.close() }
+func (w *Producer) onConnResponse(c *Conn, data []byte) {
+	if testingTimeout {
+		return
+	}
+	w.responseChan <- data
+}
+
+func (w *Producer) onConnError(c *Conn, data []byte) { w.errorChan <- data }
+func (w *Producer) onConnHeartbeat(c *Conn)          {}
+func (w *Producer) onConnIOError(c *Conn, err error) { w.close() }
 func (w *Producer) onConnClose(c *Conn) {
 	w.guard.Lock()
 	defer w.guard.Unlock()
@@ -485,8 +533,58 @@ func FindString(src []string, f string) int {
 }
 
 type RemoveProducerInfo struct {
-	producer *Producer
+	producer *producerPool
 	ts       time.Time
+}
+
+type CmdFuncT func(pid int) (*Command, error)
+type backgroundCommand struct {
+	StartTs      time.Time
+	RetryCnt     uint32
+	Topic        string
+	partitionKey []byte
+	commandFunc  CmdFuncT
+	done         bool
+	rawBytes     []byte
+}
+
+type producerPool struct {
+	addr         string
+	index        uint64
+	producerList []*Producer
+}
+
+func newProducerPool(addr string, config *Config) (*producerPool, error) {
+	pp := &producerPool{
+		addr:         addr,
+		producerList: make([]*Producer, config.ProducerPoolSize),
+	}
+
+	for i := 0; i < len(pp.producerList); i++ {
+		p, err := NewProducer(addr, config)
+		if err != nil {
+			return nil, err
+		}
+		pp.producerList[i] = p
+	}
+	return pp, nil
+}
+
+func (pp *producerPool) SetLogger(l logger, lvl LogLevel) {
+	for _, p := range pp.producerList {
+		p.SetLogger(l, lvl)
+	}
+}
+
+func (pp *producerPool) getProducer() *Producer {
+	i := atomic.AddUint64(&pp.index, 1)
+	return pp.producerList[i%uint64(len(pp.producerList))]
+}
+
+func (pp *producerPool) stopAll() {
+	for _, p := range pp.producerList {
+		p.Stop()
+	}
 }
 
 type TopicProducerMgr struct {
@@ -495,7 +593,7 @@ type TopicProducerMgr struct {
 	topicMtx           sync.RWMutex
 	hashMtx            sync.Mutex
 	topics             map[string]*TopicPartProducerInfo
-	producers          map[string]*Producer
+	producers          map[string]*producerPool
 	removingProducers  map[string]*RemoveProducerInfo
 	config             Config
 	etcdServers        []string
@@ -512,6 +610,7 @@ type TopicProducerMgr struct {
 	lookupdRecheckChan chan int
 	newTopicChan       chan string
 	newTopicRspChan    chan int
+	backgroundBuffer   chan *backgroundCommand
 }
 
 // use part=-1 to handle all partitions of topic
@@ -525,7 +624,7 @@ func NewTopicProducerMgr(topics []string, conf *Config) (*TopicProducerMgr, erro
 	mgr := &TopicProducerMgr{
 		topics:             make(map[string]*TopicPartProducerInfo, len(topics)),
 		pubStrategy:        conf.PubStrategy,
-		producers:          make(map[string]*Producer),
+		producers:          make(map[string]*producerPool),
 		removingProducers:  make(map[string]*RemoveProducerInfo),
 		config:             *conf,
 		lookupdRecheckChan: make(chan int),
@@ -533,9 +632,12 @@ func NewTopicProducerMgr(topics []string, conf *Config) (*TopicProducerMgr, erro
 		newTopicChan:       make(chan string),
 		newTopicRspChan:    make(chan int),
 	}
+	mgr.backgroundBuffer = make(chan *backgroundCommand, conf.PubBackgroundBuffer)
 	for _, t := range topics {
 		mgr.topics[t] = NewTopicPartProducerInfo(metaInfo{}, false)
 	}
+	mgr.wg.Add(1)
+	go mgr.handleBackgroundRetry()
 	return mgr, nil
 }
 
@@ -553,10 +655,10 @@ func (self *TopicProducerMgr) Stop() {
 	close(self.exitChan)
 	self.producerMtx.RLock()
 	for _, p := range self.producers {
-		p.Stop()
+		p.stopAll()
 	}
 	for _, p := range self.removingProducers {
-		p.producer.Stop()
+		p.producer.stopAll()
 	}
 	self.producerMtx.RUnlock()
 	self.wg.Wait()
@@ -707,7 +809,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 	}
 
 	allTopicParts := make([]AddrPartInfo, 0)
-	cleanProducers := make(map[string]*Producer)
+	cleanProducers := make(map[string]*producerPool)
 	for topicName, topicUrl := range topicQueryList {
 		if newTopic != "" {
 			if topicName != newTopic {
@@ -797,7 +899,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 						continue
 					}
 					self.log(LogLevelInfo, "init new producer %v for topic %v-%v", addr, topicName, partID)
-					newProd, err := NewProducer(addr, &self.config)
+					newProd, err := newProducerPool(addr, &self.config)
 					if err != nil {
 						self.log(LogLevelError, "producer %v init failed: %v", addr, err)
 					} else {
@@ -845,7 +947,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 	}
 	self.producerMtx.Unlock()
 	for _, p := range cleanProducers {
-		p.Stop()
+		p.stopAll()
 	}
 }
 
@@ -974,7 +1076,7 @@ func (self *TopicProducerMgr) removeProducer(addr string) {
 	delete(self.removingProducers, addr)
 	self.producerMtx.Unlock()
 	if ok {
-		producer.Stop()
+		producer.stopAll()
 	}
 }
 
@@ -1028,7 +1130,7 @@ func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*P
 		}
 		producer = removed.producer
 	}
-	return producer, pid, nil
+	return producer.getProducer(), pid, nil
 }
 
 func (self *TopicProducerMgr) PublishAsync(topic string, body []byte, doneChan chan *ProducerTransaction,
@@ -1065,13 +1167,30 @@ func (self *TopicProducerMgr) MultiPublishAsync(topic string, body [][]byte, don
 
 func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, partitionKey []byte,
 	doneChan chan *ProducerTransaction,
-	commandFunc func(pid int) (*Command, error), args []interface{}) error {
+	commandFunc CmdFuncT, args []interface{}) error {
+	ctx := context.Background()
+	if self.config.PubTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, self.config.PubTimeout)
+		defer cancel()
+	}
+	return self.doCommandAsyncWithRetryAndContext(ctx, topic, partitionKey, doneChan, commandFunc, args)
+}
+
+func (self *TopicProducerMgr) doCommandAsyncWithRetryAndContext(ctx context.Context, topic string, partitionKey []byte,
+	doneChan chan *ProducerTransaction,
+	commandFunc CmdFuncT, args []interface{}) error {
 	retry := uint32(0)
 	var err error
 	var producer *Producer
 	pid := -1
 
-	for retry < 3 {
+	select {
+	case <-self.exitChan:
+		return ErrStopped
+	default:
+	}
+	for retry < uint32(self.config.PubMaxRetry) {
 		retry++
 		producer, pid, err = self.getProducer(topic, partitionKey)
 		if err != nil {
@@ -1089,7 +1208,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, partitionKey
 			return err
 		}
 		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
-		err = producer.sendCommandAsync(cmd, doneChan, args)
+		err = producer.sendCommandAsyncWithContext(ctx, cmd, doneChan, args)
 		if err != nil {
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
 			if atomic.LoadInt32(&producer.failedCnt) > 3 {
@@ -1101,6 +1220,42 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, partitionKey
 		}
 	}
 	return err
+}
+
+// note: background retry is not reliable.
+// return nil error, means it is published to server
+// return ErrRetryBackground means it failed for first attemp and
+// will retry publish background, and
+// may fail or success.
+// return other error, means failed due to other reasons and no retry.
+func (self *TopicProducerMgr) PublishAndRetryBackground(topic string, body []byte) error {
+	_, err := self.doCommandWithBackgroundRetry(topic, nil, func(pid int) (*Command, error) {
+		if pid < 0 || pid == OLD_VERSION_PID {
+			// pub to old nsqd that not support partition
+			return Publish(topic, body), nil
+		}
+		return PublishWithPart(topic, strconv.Itoa(pid), body), nil
+	}, body)
+	return err
+}
+
+func (self *TopicProducerMgr) PublishWithExtAndRetryBackground(topic string, body []byte, ext *MsgExt) error {
+	if ext.TraceID != 0 {
+		return errors.New("trace not allowed in background retry pub")
+	}
+	resp, err := self.doCommandWithBackgroundRetry(topic, nil, func(pid int) (*Command, error) {
+		if pid < 0 {
+			return nil, errors.New("pub with tag need partition id")
+		}
+		return PublishWithJsonExt(topic, strconv.Itoa(pid), body, ext.ToJson())
+	}, body)
+	if err != nil {
+		return err
+	}
+	if len(resp) < 2 || string(resp) != "OK" {
+		return errors.New("response not valid")
+	}
+	return nil
 }
 
 func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
@@ -1298,14 +1453,57 @@ func (self *TopicProducerMgr) MultiPublishAndTrace(topic string, traceIDList []u
 	return id, offset, rawSize, err
 }
 
+func (self *TopicProducerMgr) doCommandWithBackgroundRetry(topic string, partitionKey []byte,
+	commandFunc CmdFuncT, rawBody []byte) ([]byte, error) {
+	firstTimeout := self.config.PubTimeout/10 + time.Millisecond*500
+	rsp, err := self.doCommandWithTimeoutAndRetry(topic, partitionKey, firstTimeout, 2, commandFunc)
+	if err == nil {
+		return rsp, nil
+	}
+	if err == errCommandArg {
+		return nil, err
+	}
+
+	// retry background
+	err = ErrRetryBackground
+	bgc := &backgroundCommand{
+		StartTs:      time.Now(),
+		RetryCnt:     0,
+		Topic:        topic,
+		partitionKey: partitionKey,
+		commandFunc:  commandFunc,
+		rawBytes:     rawBody,
+	}
+	to := time.NewTimer(self.config.PubTimeout/2 + time.Second)
+	defer to.Stop()
+	select {
+	case self.backgroundBuffer <- bgc:
+	case <-to.C:
+		return nil, errors.New("put to background retry buffer timeout")
+	case <-self.exitChan:
+		return nil, ErrStopped
+	}
+	return nil, err
+}
+
 func (self *TopicProducerMgr) doCommandWithRetry(topic string, partitionKey []byte,
-	commandFunc func(pid int) (*Command, error)) ([]byte, error) {
+	commandFunc CmdFuncT) ([]byte, error) {
+	return self.doCommandWithTimeoutAndRetry(topic, partitionKey, 0, 3, commandFunc)
+}
+
+func (self *TopicProducerMgr) doCommandWithTimeoutAndRetry(topic string, partitionKey []byte, timeout time.Duration, maxRetry uint32,
+	commandFunc CmdFuncT) ([]byte, error) {
 	retry := uint32(0)
 	var err error
 	var producer *Producer
 	var resp []byte
 	pid := -1
-	for retry < 3 {
+	select {
+	case <-self.exitChan:
+		return nil, ErrStopped
+	default:
+	}
+	for retry < maxRetry {
 		retry++
 		producer, pid, err = self.getProducer(topic, partitionKey)
 		if err != nil {
@@ -1323,7 +1521,13 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, partitionKey []by
 			return nil, err
 		}
 		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
-		resp, err = producer.sendCommand(cmd)
+		if timeout > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			resp, err = producer.sendCommandWithContext(ctx, cmd)
+			cancel()
+		} else {
+			resp, err = producer.sendCommand(cmd)
+		}
 		if err != nil {
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
 			if atomic.LoadInt32(&producer.failedCnt) > 3 {
@@ -1343,6 +1547,150 @@ func (self *TopicProducerMgr) doCommandWithRetry(topic string, partitionKey []by
 		}
 	}
 	return resp, err
+}
+
+func (self *TopicProducerMgr) handleBackgroundRetry() {
+	defer self.wg.Done()
+	bgcList := make([]*backgroundCommand, 0, 100)
+	exchangeList := make([]*backgroundCommand, 0, 100)
+	for {
+		handled := false
+		var err error
+		bgCh := self.backgroundBuffer
+		if len(bgcList) > 100 {
+			bgCh = nil
+		}
+		select {
+		case bgc := <-bgCh:
+			bgcList = append(bgcList, bgc)
+			self.log(LogLevelDebug, "batching retry: %v", len(bgcList))
+		default:
+			if len(bgcList) == 0 {
+				select {
+				case <-self.exitChan:
+					return
+				case bgc := <-self.backgroundBuffer:
+					bgcList = append(bgcList, bgc)
+					self.log(LogLevelDebug, "batching retry: %v", len(bgcList))
+				}
+				continue
+			}
+			handled = true
+			err = self.retryBatchCommand(bgcList, self.exitChan)
+		}
+		if err != nil {
+			select {
+			case <-self.exitChan:
+				return
+			default:
+				self.log(LogLevelInfo, "failed while retry in background: %v, %v",
+					err, len(bgcList))
+			}
+
+			// remove the command already done and the command with too much failed
+			for i, bgc := range bgcList {
+				if bgc.done {
+					continue
+				}
+				if int(bgc.RetryCnt) > self.config.PubMaxBackgroundRetry {
+					self.log(LogLevelInfo, "retry too much, no more retry: %v, at %v",
+						bgc, i)
+					continue
+				}
+				self.log(LogLevelInfo, "command need retry: %v, %s at %v",
+					bgc, bgc.rawBytes, i)
+				exchangeList = append(exchangeList, bgc)
+			}
+			if len(exchangeList) > 0 {
+				copy(bgcList, exchangeList)
+			}
+			bgcList = bgcList[:len(exchangeList)]
+			exchangeList = exchangeList[:0]
+			continue
+		}
+		if handled {
+			bgcList = bgcList[:0]
+		}
+	}
+}
+
+func (self *TopicProducerMgr) retryBatchCommand(bgcList []*backgroundCommand, quit chan int) error {
+	errCh := make(chan error, 1)
+	to := self.config.PubTimeout/2 + time.Second
+	doneCh := make(chan *ProducerTransaction, len(bgcList))
+	sendCnt := 0
+	for _, bgc := range bgcList {
+		if bgc.done {
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), to)
+		err := self.doCommandAsyncWithRetryAndContext(ctx, bgc.Topic, bgc.partitionKey,
+			doneCh, bgc.commandFunc, []interface{}{
+				bgc,
+			})
+		cancel()
+		bgc.RetryCnt++
+		if err != nil {
+			self.log(LogLevelInfo, "send async command failed : %v, %v, %s",
+				bgc, err, bgc.rawBytes)
+			select {
+			case errCh <- err:
+			default:
+			}
+		} else {
+			sendCnt++
+		}
+	}
+	tm := time.NewTimer(to)
+	defer tm.Stop()
+	for i := 0; i < sendCnt; i++ {
+		tm.Reset(to)
+		select {
+		case rsp := <-doneCh:
+			var bgc *backgroundCommand
+			var ok bool
+			if len(rsp.Args) > 0 {
+				bgc, ok = rsp.Args[0].(*backgroundCommand)
+				if ok {
+					bgc.done = true
+				}
+			}
+			if rsp.Error != nil {
+				var d []byte
+				if bgc != nil {
+					d = bgc.rawBytes
+				}
+				self.log(LogLevelInfo, "async command response failed : %v, %s",
+					rsp, d)
+				select {
+				case errCh <- rsp.Error:
+				default:
+				}
+			} else {
+				if bgc != nil {
+					bgc.done = true
+				}
+			}
+		case <-tm.C:
+			select {
+			case errCh <- errors.New("receive response timeout"):
+			default:
+			}
+		case <-self.exitChan:
+			select {
+			case errCh <- ErrStopped:
+			default:
+			}
+			break
+		}
+	}
+	select {
+	case err := <-errCh:
+		return err
+	default:
+	}
+	return nil
 }
 
 func (self *TopicProducerMgr) log(lvl LogLevel, line string, args ...interface{}) {

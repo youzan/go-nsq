@@ -98,6 +98,7 @@ type Config struct {
 	// Deadlines for network reads and writes
 	ReadTimeout  time.Duration `opt:"read_timeout" max:"5m" default:"60s"`
 	WriteTimeout time.Duration `opt:"write_timeout" max:"5m" default:"1s"`
+	PubTimeout   time.Duration `opt:"pub_timeout" max:"1m" default:"10s"`
 
 	// LocalAddr is the local address to use when dialing an nsqd.
 	// If empty, a local address is automatically chosen.
@@ -179,12 +180,17 @@ type Config struct {
 	// secret for nsqd authentication (requires nsqd 0.2.29+)
 	AuthSecret string `opt:"auth_secret"`
 
-	EnableTrace        bool `opt:"enable_trace"`
-	EnableOrdered      bool `opt:"enable_ordered"`
-	Hasher             hash.Hash32
-	PubStrategy        PubStrategyType
-	EnableMultiplexing bool
-	DesiredTag         string `opt:"desired_tag"`
+	EnableTrace   bool `opt:"enable_trace"`
+	EnableOrdered bool `opt:"enable_ordered"`
+	Hasher        hash.Hash32
+	PubStrategy   PubStrategyType
+	// pub will retry max retry times and each retry will wait pub timeout
+	PubMaxRetry           int `opt:"pub_max_retry" min:"1" max:"15" default:"3"`
+	PubMaxBackgroundRetry int `opt:"pub_max_background_retry" min:"1" max:"100" default:"15"`
+	PubBackgroundBuffer   int `opt:"pub_background_buffer" min:"10" max:"10000" default:"1000"`
+	ProducerPoolSize      int `opt:"producer_pool_size" min:"1" max:"100" default:"2"`
+	EnableMultiplexing    bool
+	DesiredTag            string `opt:"desired_tag"`
 	// seeds lookupd should be domain format (nsq.xxx.xxx:4160)
 	// and will not be removed if conection refused
 	// So it will always retry if not connected

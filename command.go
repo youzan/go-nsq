@@ -19,6 +19,10 @@ const (
 	dispatchTagExtK = "##client_dispatch_tag"
 )
 
+var (
+	errCommandArg = errors.New("command argument error")
+)
+
 // Command represents a command from a client to an NSQ daemon
 type Command struct {
 	Name   []byte
@@ -175,7 +179,7 @@ func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Comm
 func PublishWithJsonExt(topic string, part string, body []byte, jsonExt []byte) (*Command, error) {
 	var params = [][]byte{[]byte(topic), []byte(part)}
 	if len(jsonExt) > 65535 {
-		return nil, errors.New("extend header too large")
+		return nil, errCommandArg
 	}
 	hlen := uint16(len(jsonExt))
 	extBody := make([]byte, len(body)+2+len(jsonExt))
@@ -316,7 +320,7 @@ func MultiPublishWithPart(topic string, part string, bodies [][]byte) (*Command,
 // (useful for high-throughput situations to avoid roundtrips and saturate the pipe)
 func MultiPublishTrace(topic string, part string, traceIDList []uint64, bodies [][]byte) (*Command, error) {
 	if len(traceIDList) != len(bodies) {
-		return nil, errors.New("argument error")
+		return nil, errCommandArg
 	}
 	var params = [][]byte{[]byte(topic), []byte(part)}
 	buf, err := getMPubBodyForTrace(traceIDList, bodies)

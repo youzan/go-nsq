@@ -2,6 +2,7 @@ package nsq
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io/ioutil"
 	"log"
@@ -23,7 +24,9 @@ type ConsumerHandler struct {
 }
 
 func (h *ConsumerHandler) LogFailedMessage(message *Message) {
+	msg := string(message.Body)
 	h.messagesFailed++
+	h.t.Logf("got failed message :%v ", msg)
 	h.q.Stop()
 }
 
@@ -35,6 +38,7 @@ func (h *ConsumerHandler) HandleMessage(message *Message) error {
 	if msg != "multipublish_test_case" && msg != "publish_test_case" {
 		h.t.Error("message 'action' was not correct:", msg)
 	}
+	h.t.Logf("got message :%v ", msg)
 	h.messagesGood++
 	return nil
 }
@@ -79,6 +83,7 @@ func ensureInitChannel(t *testing.T, topicName string, useLookup bool) {
 		q: q,
 	}
 	q.AddHandler(h)
+	q.backoff(time.Second * 3)
 	if useLookup {
 		err := q.ConnectToNSQLookupd("127.0.0.1:4161")
 		if err != nil {
@@ -396,6 +401,36 @@ func TestProducerHeartbeat(t *testing.T) {
 	readMessages(topicName, t, msgCount+1, false)
 }
 
+func TestProducerPublishWithTimeout(t *testing.T) {
+	topicName := "publish_timeout" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 3
+	//EnsureTopicWithExt(t, 4150, topicName, 0, true)
+	//ensureInitChannel(t, topicName, false)
+
+	config := NewConfig()
+	config.PubTimeout = time.Second
+	w, _ := NewProducer("127.0.0.1:4150", config)
+	w.SetLogger(nullLogger, LogLevelInfo)
+
+	w.conn = newMockProducerConn(&producerConnDelegate{w})
+	atomic.StoreInt32(&w.state, StateConnected)
+	// do not run router for producer, so we can test timeout
+
+	defer w.Stop()
+
+	for i := 0; i < msgCount; i++ {
+		cmd := Publish(topicName, []byte("publish_test_case"))
+		_, err := w.sendCommand(cmd)
+		if err != context.DeadlineExceeded {
+			t.Fatalf("error %s", err)
+		}
+	}
+	err := w.Publish(topicName, []byte("bad_test_case"))
+	if err != context.DeadlineExceeded {
+		t.Fatalf("error %s", err)
+	}
+}
+
 func TestProducerPublishToNotLeader(t *testing.T) {
 	// TODO:
 }
@@ -461,6 +496,59 @@ func TestTopicProducerMgrGetNextProducer(t *testing.T) {
 			t.Fatalf("should get different partitions for producer: %v, %v , %v", pid, pid2, pid3)
 		}
 	}
+}
+
+func TestTopicProducerMgrPubBackground(t *testing.T) {
+	topicName := "topic_producer_mgr_pub_background" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 5
+	EnsureTopic(t, 4150, topicName, 0)
+
+	testingTimeout = true
+	testingSendTimeout = true
+	defer func() {
+		testingSendTimeout = false
+		testingTimeout = false
+	}()
+	time.Sleep(time.Second)
+
+	config := NewConfig()
+	config.PubTimeout = time.Second
+	config.PubMaxBackgroundRetry = 10
+	config.PubStrategy = PubRR
+	w, err := NewTopicProducerMgr([]string{topicName}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4161")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	for i := 0; i < msgCount; i++ {
+		err = w.PublishAndRetryBackground(topicName, []byte("publish_test_case"))
+		if err != ErrRetryBackground {
+			t.Error(err)
+		}
+	}
+	time.Sleep(time.Second)
+	ensureInitChannel(t, topicName, false)
+	// wait test send timeout
+	time.Sleep(config.PubTimeout * 4)
+	testingSendTimeout = false
+	// test send timeout done
+	// wait test read response timeout
+	time.Sleep(time.Second * 20)
+	testingTimeout = false
+	time.Sleep(time.Second)
+
+	err = w.Publish(topicName, []byte("bad_test_case"))
+	if err != nil {
+		t.Fatalf("error %s", err)
+	}
+
+	readMessages2(topicName, t, msgCount, true, true)
+	time.Sleep(time.Second * 5)
 }
 
 func TestTopicProducerMgrRemoveFailedLookupd(t *testing.T) {
@@ -998,6 +1086,10 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 }
 
 func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) {
+	readMessages2(topicName, t, msgCount, useLookup, false)
+}
+
+func readMessages2(topicName string, t *testing.T, msgCount int, useLookup bool, cntGreater bool) {
 	config := NewConfig()
 	config.DefaultRequeueDelay = 0
 	config.MaxBackoffDuration = 50 * time.Millisecond
@@ -1030,11 +1122,25 @@ func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) 
 	}
 
 	if h.messagesGood != msgCount {
-		t.Fatalf("end of test. should have handled a diff number of messages %d != %d", h.messagesGood, msgCount)
+		if cntGreater {
+			t.Logf("end of test. have handled a diff number of messages %d != %d", h.messagesGood, msgCount)
+			if h.messagesGood < msgCount {
+				t.Fatalf("end of test. should have handled a diff number of messages %d != %d", h.messagesGood, msgCount)
+			}
+		} else {
+			t.Fatalf("end of test. should have handled a diff number of messages %d != %d", h.messagesGood, msgCount)
+		}
 	}
 
 	if h.messagesFailed != 1 {
-		t.Fatal("failed message not done")
+		t.Logf("end of test. failed messages %d", h.messagesFailed)
+		if cntGreater {
+			if h.messagesFailed < 1 {
+				t.Fatal("failed message not done")
+			}
+		} else {
+			t.Fatal("failed message not done")
+		}
 	}
 }
 
