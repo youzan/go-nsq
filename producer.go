@@ -231,7 +231,7 @@ func (w *Producer) MultiPublish(topic string, body [][]byte) error {
 }
 
 func (w *Producer) sendCommandWithContext(ctx context.Context, cmd *Command) ([]byte, error) {
-	doneChan := make(chan *ProducerTransaction)
+	doneChan := make(chan *ProducerTransaction, 1)
 	err := w.sendCommandAsyncWithContext(ctx, cmd, doneChan, nil)
 	if err != nil {
 		close(doneChan)
@@ -1207,15 +1207,22 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetryAndContext(ctx context.Cont
 		if err != nil {
 			return err
 		}
+		tstart := time.Now()
 		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
 		err = producer.sendCommandAsyncWithContext(ctx, cmd, doneChan, args)
+		cost := time.Since(tstart)
 		if err != nil {
-			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
+			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v, cost %v",
+				producer.addr, topic, pid, err, cost)
 			if atomic.LoadInt32(&producer.failedCnt) > 3 {
 				self.removeProducer(producer.addr)
 			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
+			if cost >= time.Second/2 {
+				self.log(LogLevelInfo, "do command to producer %v for topic %v-%v slow cost: %v",
+					producer.addr, topic, pid, cost)
+			}
 			break
 		}
 	}
@@ -1520,6 +1527,7 @@ func (self *TopicProducerMgr) doCommandWithTimeoutAndRetry(topic string, partiti
 			self.log(LogLevelError, "get command err: %v", err)
 			return nil, err
 		}
+		tstart := time.Now()
 		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
 		if timeout > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -1528,8 +1536,10 @@ func (self *TopicProducerMgr) doCommandWithTimeoutAndRetry(topic string, partiti
 		} else {
 			resp, err = producer.sendCommand(cmd)
 		}
+		cost := time.Since(tstart)
 		if err != nil {
-			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
+			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v, cost: %v",
+				producer.addr, topic, pid, err, cost)
 			if atomic.LoadInt32(&producer.failedCnt) > 3 {
 				self.removeProducer(producer.addr)
 			} else if IsFailedOnNotLeader(err) || IsFailedOnNotWritable(err) ||
@@ -1543,6 +1553,9 @@ func (self *TopicProducerMgr) doCommandWithTimeoutAndRetry(topic string, partiti
 			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
+			if cost >= time.Second/2 {
+				self.log(LogLevelInfo, "do command to producer %v for topic %v-%v slow cost: %v", producer.addr, topic, pid, cost)
+			}
 			break
 		}
 	}
@@ -1649,12 +1662,12 @@ func (self *TopicProducerMgr) retryBatchCommand(bgcList []*backgroundCommand, qu
 		select {
 		case rsp := <-doneCh:
 			var bgc *backgroundCommand
-			var ok bool
 			if len(rsp.Args) > 0 {
-				bgc, ok = rsp.Args[0].(*backgroundCommand)
-				if ok {
-					bgc.done = true
-				}
+				bgc, _ = rsp.Args[0].(*backgroundCommand)
+			}
+			if bgc != nil && time.Since(bgc.StartTs) > time.Second/2 {
+				self.log(LogLevelInfo, "command response slow: %v, %s, cost: %v",
+					bgc, bgc.rawBytes, time.Since(bgc.StartTs))
 			}
 			if rsp.Error != nil {
 				var d []byte
