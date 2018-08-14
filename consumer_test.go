@@ -46,6 +46,10 @@ func NewNsqlookupdWrapper(t *testing.T, addr string, metaInfo metaInfo) *Nsqdloo
 	return proxy
 }
 
+func (self *NsqdlookupdWrapper) fakeListLookupdWrap(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("{}"))
+}
+
 func (self *NsqdlookupdWrapper) fakeLookupdWrap(w http.ResponseWriter, r *http.Request) {
 	reqParams, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
@@ -59,6 +63,7 @@ func (self *NsqdlookupdWrapper) fakeLookupdWrap(w http.ResponseWriter, r *http.R
 		self.t.Fatalf("error parse lookup resp")
 	}
 	w.Header().Add("X-Nsq-Content-Type", "nsq; version=1.0")
+	self.t.Logf("resp: %s", jsonBytes)
 	w.Write(jsonBytes)
 }
 
@@ -94,16 +99,41 @@ func (self *NsqdlookupdWrapper) lookupdWrap(w http.ResponseWriter, r *http.Reque
 	w.Write(jsonBytes)
 }
 
-func ensureFakedLookup(t *testing.T, addr string, stopC chan struct{}) *NsqdlookupdWrapper {
+func ensureFakedLookup(t *testing.T, addr string, meta metaInfo, topicList []string, stopC chan struct{}) (*NsqdlookupdWrapper, []*peerInfo, map[string]*peerInfo) {
 	lookupdWrapper := NewNsqlookupdWrapper(t, "127.0.0.1:4161", metaInfo{
 		PartitionNum:  1,
 		Replica:       1,
 		ExtendSupport: true,
 	})
-
+	allPeers := make([]*peerInfo, 0)
+	for i := 0; i < meta.PartitionNum*meta.Replica; i++ {
+		var peer peerInfo
+		peer.BroadcastAddress = "127.0.0.1"
+		peer.Hostname = "test" + strconv.Itoa(i)
+		peer.HTTPPort = 4151 + i*100
+		peer.RemoteAddress = "127.0.0.1"
+		peer.TCPPort = 4150 + i*100
+		peer.Version = "1.0"
+		allPeers = append(allPeers, &peer)
+	}
+	usedPeers := make(map[string]*peerInfo)
+	for _, t := range topicList {
+		rsp := lookupResp{
+			Meta:       meta,
+			Partitions: make(map[string]*peerInfo),
+		}
+		for i := 0; i < meta.PartitionNum; i++ {
+			peer := allPeers[i]
+			rsp.Producers = append(rsp.Producers, peer)
+			rsp.Partitions[strconv.Itoa(i)] = peer
+			usedPeers[net.JoinHostPort(peer.BroadcastAddress, strconv.Itoa(peer.TCPPort))] = peer
+		}
+		lookupdWrapper.fakeResponse[t] = rsp
+	}
 	go func() {
 		srvMux := http.NewServeMux()
 		srvMux.HandleFunc("/lookup", lookupdWrapper.fakeLookupdWrap)
+		srvMux.HandleFunc("/listlookup", lookupdWrapper.fakeListLookupdWrap)
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			t.Fatal(err)
@@ -117,7 +147,7 @@ func ensureFakedLookup(t *testing.T, addr string, stopC chan struct{}) *Nsqdlook
 		http.Serve(l, srvMux)
 	}()
 	<-time.After(time.Second)
-	return lookupdWrapper
+	return lookupdWrapper, allPeers, usedPeers
 }
 
 var nullLogger = log.New(ioutil.Discard, "", log.LstdFlags)

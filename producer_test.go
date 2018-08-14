@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/spaolacci/murmur3"
 )
 
 type ConsumerHandler struct {
@@ -311,6 +313,7 @@ func TestProducerPublishTrace(t *testing.T) {
 
 	readMessages(topicName, t, msgCount, false)
 }
+
 func TestProducerPublishWithExt(t *testing.T) {
 	topicName := "publish_ext" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10
@@ -551,6 +554,59 @@ func TestTopicProducerMgrPubBackground(t *testing.T) {
 	time.Sleep(time.Second * 5)
 }
 
+func TestTopicProducerMgrPubOrdered(t *testing.T) {
+	stopC := make(chan struct{})
+	var meta metaInfo
+	meta.PartitionNum = 1
+	meta.Replica = 1
+	topicName := "topic_producer_mgr_pub_order" + strconv.Itoa(int(time.Now().Unix()))
+	topicList := make([]string, 0)
+	topicList = append(topicList, topicName)
+	ensureFakedLookup(t, "127.0.0.1:4165", meta, topicList, stopC)
+	defer func() {
+		close(stopC)
+		time.Sleep(time.Second)
+	}()
+
+	msgCount := 5
+	EnsureTopic(t, 4150, topicName, 0)
+	ensureInitChannel(t, topicName, false)
+
+	time.Sleep(time.Second)
+
+	config := NewConfig()
+	config.PubTimeout = time.Second
+	config.PubMaxBackgroundRetry = 10
+	config.EnableOrdered = true
+	config.EnableTrace = true
+	config.Hasher = murmur3.New32()
+	w, err := NewTopicProducerMgr([]string{topicName}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4165")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	for i := 0; i < msgCount; i++ {
+		id, offset, size, err := w.PublishOrdered(topicName, []byte("publish_test_case"), []byte("publish_test_case"))
+		if err != nil {
+			t.Error(err)
+		}
+		t.Logf("pubto %v, %v, %v", id, offset, size)
+	}
+	time.Sleep(time.Second)
+
+	err = w.Publish(topicName, []byte("bad_test_case"))
+	if err != nil {
+		t.Fatalf("error %s", err)
+	}
+
+	readMessages2(topicName, t, msgCount, true, true)
+}
+
 func TestTopicProducerMgrRemoveFailedLookupd(t *testing.T) {
 	topicName := "topic_producer_mgr_failed_lookup" + strconv.Itoa(int(time.Now().Unix()))
 	topicList := make([]string, 0)
@@ -640,45 +696,20 @@ func TestTopicProducerMgrRemoveNsqdNode(t *testing.T) {
 		removingKeepTime = oldKeep
 	}()
 	stopC := make(chan struct{})
-	fakedLookup := ensureFakedLookup(t, "127.0.0.1:4165", stopC)
-	defer func() {
-		close(stopC)
-		time.Sleep(time.Second)
-	}()
+	var meta metaInfo
+	meta.PartitionNum = 2
+	meta.Replica = 2
 	topicName := "test_remove_node" + strconv.Itoa(int(time.Now().Unix()))
 	topicList := make([]string, 0)
 	for i := 0; i < 2; i++ {
 		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
 	}
-	var meta metaInfo
-	meta.PartitionNum = 2
-	meta.Replica = 2
-	allPeers := make([]*peerInfo, 0)
-	for i := 0; i < meta.PartitionNum*2; i++ {
-		var peer peerInfo
-		peer.BroadcastAddress = "127.0.0.1"
-		peer.Hostname = "test" + strconv.Itoa(i)
-		peer.HTTPPort = 4151 + i*100
-		peer.RemoteAddress = "127.0.0.1"
-		peer.TCPPort = 4150 + i*100
-		peer.Version = "1.0"
-		allPeers = append(allPeers, &peer)
-	}
-	usedPeers := make(map[string]*peerInfo)
-	for _, t := range topicList {
-		rsp := lookupResp{
-			Meta:       meta,
-			Partitions: make(map[string]*peerInfo),
-		}
-		for i := 0; i < meta.PartitionNum; i++ {
-			peer := allPeers[i]
-			rsp.Producers = append(rsp.Producers, peer)
-			rsp.Partitions[strconv.Itoa(i)] = peer
-			usedPeers[net.JoinHostPort(peer.BroadcastAddress, strconv.Itoa(peer.TCPPort))] = peer
-		}
+	fakedLookup, allPeers, usedPeers := ensureFakedLookup(t, "127.0.0.1:4165", meta, topicList, stopC)
+	defer func() {
+		close(stopC)
+		time.Sleep(time.Second)
+	}()
 
-		fakedLookup.fakeResponse[t] = rsp
-	}
 	config := NewConfig()
 	config.LookupdSeeds = append(config.LookupdSeeds, "127.0.0.1:4165")
 	config.LookupdPollInterval = time.Second
