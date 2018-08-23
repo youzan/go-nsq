@@ -196,11 +196,20 @@ func (w *Producer) PublishAsync(topic string, body []byte, doneChan chan *Produc
 	return w.sendCommandAsync(Publish(topic, body), doneChan, args)
 }
 
-func (w *Producer) PublishWithPartitionAsync(topic string, partition string, body []byte, doneChan chan *ProducerTransaction,
+func (w *Producer) PublishWithPartitionIdAsync(topic string, partition string, body []byte, ext *MsgExt, doneChan chan *ProducerTransaction,
 args ...interface{}) error {
-	return w.sendCommandAsync(PublishWithPart(topic, partition, body), doneChan, args)
+	var cmd *Command
+	var err error
+	if ext != nil {
+		cmd, err = PublishWithJsonExt(topic, partition, body, ext.ToJson())
+		if err != nil {
+			return err
+		}
+	} else {
+		cmd = PublishWithPart(topic, partition, body)
+	}
+	return w.sendCommandAsync(cmd, doneChan, args)
 }
-
 // MultiPublishAsync publishes a slice of message bodies to the specified topic
 // but does not wait for the response from `nsqd`.
 //
@@ -978,50 +987,6 @@ func (self *TopicProducerMgr) lookupLoop() {
 	}
 }
 
-func (self *TopicProducerMgr) getNextProducerAddrWithPartitionId(partProducerInfo *TopicPartProducerInfo, pId int) (int, string) {
-	addrInfo := AddrPartInfo{"", -1}
-	if pId < -1 {
-		self.log(LogLevelError, "pass in partition id invalid: %v", pId)
-		return -1, ""
-	}
-	length := len(partProducerInfo.allPartitions)
-	if length == 0 {
-		return -1, ""
-	} else if length == 1 && pId == -1 {
-		addrInfo = partProducerInfo.getPartitionInfo(0)
-		return addrInfo.pid, addrInfo.addr
-	}
-	retry := 0
-	index := uint32(0)
-	for addrInfo.addr == "" {
-		if pId == -1 {
-			if self.pubStrategy == PubRR {
-				if retry >= length {
-					break
-				}
-				index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
-				addrInfo = partProducerInfo.getPartitionInfo(index % uint32(len(partProducerInfo.allPartitions)))
-				retry++
-			} else {
-				// not supported strategy
-				return -1, ""
-			}
-		} else {
-			if !partProducerInfo.isMetaValid || partProducerInfo.meta.PartitionNum <= 0 {
-				self.log(LogLevelError, "partition meta info invalid: %v", partProducerInfo.meta)
-				return -1, ""
-			}
-			parNum := partProducerInfo.meta.PartitionNum
-			if pId >= parNum {
-				self.log(LogLevelError, "pass in partition id: %v execeed max value: %v", pId, parNum)
-			}
-			addrInfo = partProducerInfo.getSpecificPartitionInfo(pId)
-			break
-		}
-	}
-	return addrInfo.pid, addrInfo.addr
-}
-
 func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartProducerInfo, partitionKey []byte) (int, string) {
 	addrInfo := AddrPartInfo{"", -1}
 	length := len(partProducerInfo.allPartitions)
@@ -1140,7 +1105,7 @@ func (self *TopicProducerMgr) hasAnyProducer(topic string) bool {
 	return false
 }
 
-func (self *TopicProducerMgr) getProducerWithPartitionId(topic string, pId int) (*Producer, int, error) {
+func (self *TopicProducerMgr) getPartitionProducerInfo(topic string) (*TopicPartProducerInfo, error) {
 	self.topicMtx.RLock()
 	partProducerInfo, ok := self.topics[topic]
 	self.topicMtx.RUnlock()
@@ -1152,47 +1117,53 @@ func (self *TopicProducerMgr) getProducerWithPartitionId(topic string, pId int) 
 			partProducerInfo, ok = self.topics[topic]
 			self.topicMtx.RUnlock()
 			if !ok {
-				return nil, -1, ErrTopicNotSet
+				return nil, ErrTopicNotSet
 			}
 		}
 	}
-	pid, addr := self.getNextProducerAddrWithPartitionId(partProducerInfo, pId)
-	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pid, addr)
-	if addr == "" {
-		select {
-		case self.lookupdRecheckChan <- 1:
-		default:
-		}
-		return nil, pid, ErrNoProducer
-	}
+	return partProducerInfo, nil
+}
+
+//get producer based on pass in nsqd address
+func (self *TopicProducerMgr) getNSQDProducer(addr string) (*Producer, error) {
 	self.producerMtx.RLock()
 	producer, ok := self.producers[addr]
 	self.producerMtx.RUnlock()
 	if !ok {
 		removed, ok := self.removingProducers[addr]
 		if !ok {
-			return nil, pid, ErrNoProducer
+			return nil, ErrNoProducer
 		}
 		producer = removed.producer
 	}
-	return producer, pid, nil
+	return producer, nil
+}
+
+func (self *TopicProducerMgr) getProducerWithPartitionId(topic string, pId int) (*Producer, int, error) {
+	partProducerInfo, err := self.getPartitionProducerInfo(topic)
+	if err != nil {
+		return nil, -1, err
+	}
+	pi := partProducerInfo.getSpecificPartitionInfo(pId)
+	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pId, pi)
+	if pi.addr == "" {
+		select {
+		case self.lookupdRecheckChan <- 1:
+		default:
+		}
+		return nil, pId, ErrNoProducer
+	}
+	producer, err := self.getNSQDProducer(pi.addr)
+	if err != nil {
+		return nil, -1, err
+	}
+	return producer, pId, nil
 }
 
 func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*Producer, int, error) {
-	self.topicMtx.RLock()
-	partProducerInfo, ok := self.topics[topic]
-	self.topicMtx.RUnlock()
-	if !ok {
-		self.newTopicChan <- topic
-		select {
-		case <-self.newTopicRspChan:
-			self.topicMtx.RLock()
-			partProducerInfo, ok = self.topics[topic]
-			self.topicMtx.RUnlock()
-			if !ok {
-				return nil, -1, ErrTopicNotSet
-			}
-		}
+	partProducerInfo, err := self.getPartitionProducerInfo(topic)
+	if err != nil {
+		return nil, -1, err
 	}
 	pid, addr := self.getNextProducerAddr(partProducerInfo, partitionKey)
 	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pid, addr)
@@ -1203,15 +1174,9 @@ func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*P
 		}
 		return nil, pid, ErrNoProducer
 	}
-	self.producerMtx.RLock()
-	producer, ok := self.producers[addr]
-	self.producerMtx.RUnlock()
-	if !ok {
-		removed, ok := self.removingProducers[addr]
-		if !ok {
-			return nil, pid, ErrNoProducer
-		}
-		producer = removed.producer
+	producer, err := self.getNSQDProducer(addr)
+	if err != nil {
+		return nil, -1, err
 	}
 	return producer.getProducer(), pid, nil
 }
@@ -1409,15 +1374,37 @@ func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
 	return err
 }
 
-func (self *TopicProducerMgr) PublishWithPartition(topic string, partition int, body []byte) error {
-	_, err := self.doCommandWithRetryAndPartition(topic, partition, func(pid int) (*Command, error) {
+func (self *TopicProducerMgr) PublishWithJsonExtAndPartitionId(topic string, partition int, body []byte, ext *MsgExt) (NewMessageID,
+uint64, uint32, error) {
+	resp, err := self.doCommandWithRetryAndPartition(topic, partition, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
-			// pub to old nsqd that not support partition
-			return Publish(topic, body), nil
+			return nil, errors.New(fmt.Sprintf("invalid partition: %v", partition))
 		}
-		return PublishWithPart(topic, strconv.Itoa(pid), body), nil
+		cmd, err := PublishWithJsonExt(topic, strconv.Itoa(pid), body, ext.ToJson())
+		if err != nil {
+			return nil, err
+		}
+		return cmd, nil
 	})
-	return err
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if ext.TraceID != 0 {
+		// response should be : OK+16 bytes id+8bytes offset+4 bytes size
+		if len(resp) < 2+MsgIDLength+8+4 {
+			self.log(LogLevelError, "trace response invalid: %v", resp)
+			return 0, 0, 0, errors.New("trace response not valid")
+		}
+		id := GetNewMessageID(resp[2 : 2+MsgIDLength])
+		offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
+		rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
+		return id, offset, rawSize, err
+	} else {
+		if len(resp) < 2 || string(resp) != "OK" {
+			return 0, 0, 0, errors.New("response not valid")
+		}
+		return 0, 0, 0, nil
+	}
 }
 
 func (self *TopicProducerMgr) PublishOrdered(topic string, partitionKey []byte, body []byte) (NewMessageID,
@@ -1508,6 +1495,37 @@ func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body
 	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
 	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
 	return id, offset, rawSize, err
+}
+
+// pub with trace will return the message id and the message offset and size in the queue
+func (self *TopicProducerMgr) PublishAndTraceWithPartitionId(topic string, partition int, traceID uint64, body []byte) (NewMessageID,
+uint64, uint32, error) {
+	resp, err := self.doCommandWithRetryAndPartition(topic, partition, func(pid int) (*Command, error) {
+		return PublishTrace(topic, strconv.Itoa(pid), traceID, body)
+	})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	// response should be : OK+16 bytes id+8bytes offset+4 bytes size
+	if len(resp) < 2+MsgIDLength+8+4 {
+		self.log(LogLevelError, "trace response invalid: %v", resp)
+		return 0, 0, 0, errors.New("trace response not valid")
+	}
+	id := GetNewMessageID(resp[2 : 2+MsgIDLength])
+	offset := binary.BigEndian.Uint64(resp[2+MsgIDLength : 2+MsgIDLength+8])
+	rawSize := binary.BigEndian.Uint32(resp[2+MsgIDLength+8 : 2+MsgIDLength+8+4])
+	return id, offset, rawSize, err
+}
+
+func (self *TopicProducerMgr) PublishWithPartitionId(topic string, partition int, body []byte) error {
+	_, err := self.doCommandWithRetryAndPartition(topic, partition, func(pid int) (*Command, error) {
+		if pid < 0 || pid == OLD_VERSION_PID {
+			// pub to old nsqd that not support partition
+			return nil, errors.New(fmt.Sprintf("invalid partition: %v", partition))
+		}
+		return PublishWithPart(topic, strconv.Itoa(pid), body), nil
+	})
+	return err
 }
 
 type MsgExt struct {
