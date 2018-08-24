@@ -1387,8 +1387,19 @@ func (ext *MsgExt) ToJson() []byte {
 	return jsonExt
 }
 
+func (self *TopicProducerMgr) MultiPublishWithJsonExt(topic string, body [][]byte, extList []*MsgExt) error {
+	if len(extList) != len(body) {
+		return errors.New("arguments error")
+	}
+
+	_, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
+		return MultiPublishWithJsonExt(topic, strconv.Itoa(pid), extList, body)
+	})
+	return err
+}
+
 func (self *TopicProducerMgr) PublishWithJsonExt(topic string, body []byte, ext *MsgExt) (NewMessageID,
-	uint64, uint32, error) {
+uint64, uint32, error) {
 	resp, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
 		if pid < 0 {
 			return nil, errors.New("pub with tag need partition id")

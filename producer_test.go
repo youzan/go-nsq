@@ -869,6 +869,80 @@ func TestTopicProducerMgrRemoveNsqdNode(t *testing.T) {
 	w.producerMtx.Unlock()
 }
 
+func TestTopicProducerMgrMultiPublishWithJsonExt(t *testing.T) {
+	topicName := "topic_producer_mgr_mult_publish_ext"
+	msgCount := 10
+	extList := make([]*MsgExt, 0)
+	msgs := make([][]byte, 0)
+
+	//construct message
+	for idx := 0; idx < msgCount; idx ++ {
+		var ext *MsgExt
+		if idx%2==0 {
+			ext = &MsgExt{}
+		} else {
+			ext = &MsgExt{
+				TraceID: 12345,
+				DispatchTag: "tag123",
+				Custom: map[string]string{"key1":"val1", "key2":"val2"},
+			}
+		}
+		extList = append(extList, ext)
+		msgs = append(msgs, []byte("multipublish_test_case"))
+	}
+
+	badMsgCount := 1
+	badExtList := make([]*MsgExt, 0)
+	badMsgs := make([][]byte, 0)
+
+	//construct message
+	for idx := 0; idx < badMsgCount; idx ++ {
+		var ext *MsgExt
+		if idx%2==0 {
+			ext = &MsgExt{}
+		} else {
+			ext = &MsgExt{
+				TraceID: 12345,
+				DispatchTag: "tag123",
+				Custom: map[string]string{"key1":"val1", "key2":"val2"},
+			}
+		}
+		badExtList = append(badExtList, ext)
+		badMsgs = append(badMsgs, []byte("bad_test_case"))
+	}
+	EnsureTopicWithExt(t, 4150, topicName, 0, true)
+	ensureInitChannelExt(t, topicName, false)
+
+	// wait nsqd report to lookupd
+	time.Sleep(time.Second * 3)
+
+	config := NewConfig()
+
+	config.PubStrategy = PubRR
+	config.DialTimeout = time.Second
+	config.ReadTimeout = time.Second * 6
+	config.HeartbeatInterval = time.Second * 3
+	w, err := NewTopicProducerMgr([]string{topicName}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4161")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	err = w.MultiPublishWithJsonExt(topicName, msgs, extList)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	err = w.MultiPublishWithJsonExt(topicName, badMsgs, badExtList)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	readExtMessages(topicName, t, msgCount, false)
+}
+
 func TestTopicProducerMgrWithTagDynamicTopic(t *testing.T) {
 	testTopicProducerMgrWithTag(t, true)
 }

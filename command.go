@@ -241,6 +241,46 @@ func getMPubBody(bodies [][]byte) (*bytes.Buffer, error) {
 	return buf, nil
 }
 
+func getMPubBodyWithJsonExt(extList []*MsgExt, bodies [][]byte) (*bytes.Buffer, error) {
+	num := uint32(len(bodies))
+	jsonExtBytesList := make([][]byte, 0)
+	bodySize := 4
+	for i, b := range bodies {
+		extJsonBytes := extList[i].ToJson();
+		jsonExtBytesList = append(jsonExtBytesList, extJsonBytes)
+		bodySize += len(b) + 4 + 2 + len(extJsonBytes)
+	}
+	body := make([]byte, 0, bodySize)
+	buf := bytes.NewBuffer(body)
+
+	err := binary.Write(buf, binary.BigEndian, &num)
+	if err != nil {
+		return nil, err
+	}
+	for i, b := range bodies {
+		// the length should contain the body size + 8 bytes trace id.
+		err = binary.Write(buf, binary.BigEndian, int32(len(b) + 2 + len(jsonExtBytesList[i])))
+		if err != nil {
+			return nil, err
+		}
+		err := binary.Write(buf, binary.BigEndian, int16(len(jsonExtBytesList[i])))
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = buf.Write(jsonExtBytesList[i])
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = buf.Write(b)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buf, nil
+}
+
 func getMPubBodyForTrace(traceIDList []uint64, bodies [][]byte) (*bytes.Buffer, error) {
 	num := uint32(len(bodies))
 	bodySize := 4
@@ -328,6 +368,18 @@ func MultiPublishTrace(topic string, part string, traceIDList []uint64, bodies [
 		return nil, err
 	}
 	return &Command{[]byte("MPUB_TRACE"), params, buf.Bytes()}, nil
+}
+
+func MultiPublishWithJsonExt(topic string, part string, extList []*MsgExt, bodies [][]byte) (*Command, error) {
+	if len(extList) != len(bodies) {
+		return nil, errCommandArg
+	}
+	var params = [][]byte{[]byte(topic), []byte(part)}
+	buf, err := getMPubBodyWithJsonExt(extList, bodies)
+	if err != nil {
+		return nil, err
+	}
+	return &Command{[]byte("MPUB_EXT"), params, buf.Bytes()}, nil
 }
 
 // Subscribe creates a new Command to subscribe to the given topic/channel
