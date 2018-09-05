@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync/atomic"
 	"time"
+	"strconv"
 )
 
 // The number of bytes for a Message.ID
@@ -85,7 +86,19 @@ func (m *Message) GetJsonExt() (*MsgExt, error) {
 	}
 	var jext MsgExt
 	if len(m.ExtBytes) > 0 {
-		err := json.Unmarshal(m.ExtBytes, &jext)
+		err := json.Unmarshal(m.ExtBytes, &jext.Custom)
+		if err != nil {
+			return nil, err
+		}
+	}
+	//fetch tag
+	if tag, exist := jext.Custom[dispatchTagExtK]; exist {
+		jext.DispatchTag = tag
+	}
+	//fetch traceID
+	if traceIDStr, exist := jext.Custom[traceIDExtK]; exist {
+		var err error
+		jext.TraceID, err = strconv.ParseUint(traceIDStr, 10, 64)
 		if err != nil {
 			return nil, err
 		}

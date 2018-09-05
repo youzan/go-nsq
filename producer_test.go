@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"github.com/stretchr/testify/assert"
 )
 
 type ConsumerHandler struct {
@@ -21,6 +22,7 @@ type ConsumerHandler struct {
 	q              *Consumer
 	messagesGood   int
 	messagesFailed int
+	Msgs           []*Message
 }
 
 func (h *ConsumerHandler) LogFailedMessage(message *Message) {
@@ -32,6 +34,9 @@ func (h *ConsumerHandler) LogFailedMessage(message *Message) {
 
 func (h *ConsumerHandler) HandleMessage(message *Message) error {
 	msg := string(message.Body)
+	if message.Attempts == 1 {
+		h.Msgs = append(h.Msgs, message)
+	}
 	if msg == "bad_test_case" {
 		return errors.New("fail this message")
 	}
@@ -874,7 +879,6 @@ func TestTopicProducerMgrMultiPublishWithJsonExt(t *testing.T) {
 	msgCount := 10
 	extList := make([]*MsgExt, 0)
 	msgs := make([][]byte, 0)
-
 	//construct message
 	for idx := 0; idx < msgCount; idx ++ {
 		var ext *MsgExt
@@ -940,7 +944,24 @@ func TestTopicProducerMgrMultiPublishWithJsonExt(t *testing.T) {
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
-	readExtMessages(topicName, t, msgCount, false)
+	msgsRead := readExtMessages(topicName, t, msgCount, false)
+	for i, msg := range msgsRead {
+		if i%2 == 0 {
+			assert.Contains(t, string(msg.ExtBytes), "")
+			assert.Equal(t, msg.ExtVer, uint8(0))
+		} else {
+			assert.Equal(t, msg.ExtVer, uint8(4))
+			assert.Equal(t, msg.GetTraceID(), uint64(12345))
+			jsonExt, err := msg.GetJsonExt();
+			if err != nil {
+				t.Fatalf(err.Error())
+			}
+			assert.Equal(t, jsonExt.TraceID, uint64(12345))
+			assert.Equal(t, jsonExt.DispatchTag, "tag123")
+			assert.Equal(t, jsonExt.Custom["key1"], "val1")
+			assert.Equal(t, jsonExt.Custom["key2"], "val2")
+		}
+	}
 }
 
 func TestTopicProducerMgrWithTagDynamicTopic(t *testing.T) {
@@ -1218,7 +1239,7 @@ func readMessages2(topicName string, t *testing.T, msgCount int, useLookup bool,
 	}
 }
 
-func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup bool) {
+func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup bool) []*Message {
 	config := NewConfig()
 	config.DefaultRequeueDelay = 0
 	config.MaxBackoffDuration = 50 * time.Millisecond
@@ -1258,6 +1279,7 @@ func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup boo
 	if h.messagesFailed != 1 {
 		t.Fatal("failed message not done")
 	}
+	return h.Msgs
 }
 
 type mockProducerConn struct {
