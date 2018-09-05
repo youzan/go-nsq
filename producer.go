@@ -1383,10 +1383,7 @@ func (ext *MsgExt) ToJson() []byte {
 		ext.Custom[dispatchTagExtK] = ext.DispatchTag
 	}
 
-	jsonExt := make([]byte, 0)
-	if len(ext.Custom) > 0 {
-		jsonExt, _ = json.Marshal(ext.Custom)
-	}
+	jsonExt, _ := json.Marshal(ext.Custom)
 	return jsonExt
 }
 

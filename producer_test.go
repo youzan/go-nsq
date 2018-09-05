@@ -947,8 +947,8 @@ func TestTopicProducerMgrMultiPublishWithJsonExt(t *testing.T) {
 	msgsRead := readExtMessages(topicName, t, msgCount, false)
 	for i, msg := range msgsRead {
 		if i%2 == 0 {
-			assert.Contains(t, string(msg.ExtBytes), "")
-			assert.Equal(t, msg.ExtVer, uint8(0))
+			assert.Contains(t, string(msg.ExtBytes), "{}")
+			assert.Equal(t, msg.ExtVer, uint8(4))
 		} else {
 			assert.Equal(t, msg.ExtVer, uint8(4))
 			assert.Equal(t, msg.GetTraceID(), uint64(12345))
