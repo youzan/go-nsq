@@ -5,7 +5,8 @@ go:
 env:
   - NSQ_DOWNLOAD=nsq-0.3.7-HA.1.5.8.linux-amd64.go1.8.3 NSQ_RELEASE=v0.3.7-HA.1.5.8 GOARCH=amd64
 install:
-  - go get github.com/golang/snappy 
+  - go get github.com/golang/snappy
+  - go get github.com/stretchr/testify
 script:
   - wget https://github.com/youzan/nsq/releases/download/$NSQ_RELEASE/$NSQ_DOWNLOAD.tar.gz
   - tar zxvf $NSQ_DOWNLOAD.tar.gz
