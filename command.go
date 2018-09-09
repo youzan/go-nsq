@@ -247,7 +247,7 @@ func getMPubBodyWithJsonExt(extList []*MsgExt, bodies [][]byte) (*bytes.Buffer, 
 	bodySize := 4
 	for i, b := range bodies {
 		extJsonBytes := extList[i].ToJson();
-		jsonExtBytesList = append(jsonExtBytesList, extJsonBytes)
+		jsonExtBytesList[i] = extJsonBytes
 		bodySize += len(b) + 4 + 2 + len(extJsonBytes)
 	}
 	body := make([]byte, 0, bodySize)
