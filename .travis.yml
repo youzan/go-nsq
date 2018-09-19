@@ -7,6 +7,7 @@ env:
 install:
   - go get github.com/golang/snappy
   - go get github.com/stretchr/testify
+  - go get github.com/spaolacci/murmur3
 script:
   - wget https://github.com/youzan/nsq/releases/download/$NSQ_RELEASE/$NSQ_DOWNLOAD.tar.gz
   - tar zxvf $NSQ_DOWNLOAD.tar.gz
