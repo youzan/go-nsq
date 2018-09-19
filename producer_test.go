@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/spaolacci/murmur3"
+	"github.com/stretchr/testify/assert"
 	"io/ioutil"
 	"log"
 	"net"
@@ -14,8 +16,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/spaolacci/murmur3"
 )
 
 type ConsumerHandler struct {
@@ -23,6 +23,7 @@ type ConsumerHandler struct {
 	q              *Consumer
 	messagesGood   int
 	messagesFailed int
+	Msgs           []*Message
 }
 
 func (h *ConsumerHandler) LogFailedMessage(message *Message) {
@@ -34,6 +35,9 @@ func (h *ConsumerHandler) LogFailedMessage(message *Message) {
 
 func (h *ConsumerHandler) HandleMessage(message *Message) error {
 	msg := string(message.Body)
+	if message.Attempts == 1 {
+		h.Msgs = append(h.Msgs, message)
+	}
 	if msg == "bad_test_case" {
 		return errors.New("fail this message")
 	}
@@ -900,6 +904,96 @@ func TestTopicProducerMgrRemoveNsqdNode(t *testing.T) {
 	w.producerMtx.Unlock()
 }
 
+func TestTopicProducerMgrMultiPublishWithJsonExt(t *testing.T) {
+	topicName := "topic_producer_mgr_mult_publish_ext"
+	msgCount := 10
+	extList := make([]*MsgExt, 0)
+	msgs := make([][]byte, 0)
+	//construct message
+	for idx := 0; idx < msgCount; idx++ {
+		var ext *MsgExt
+		if idx%2 == 0 {
+			ext = &MsgExt{}
+		} else {
+			ext = &MsgExt{
+				TraceID:     12345,
+				DispatchTag: "tag123",
+				Custom:      map[string]string{"key1": "val1", "key2": "val2"},
+			}
+		}
+		extList = append(extList, ext)
+		msgs = append(msgs, []byte("multipublish_test_case"))
+	}
+
+	badMsgCount := 1
+	badExtList := make([]*MsgExt, 0)
+	badMsgs := make([][]byte, 0)
+
+	//construct message
+	for idx := 0; idx < badMsgCount; idx++ {
+		var ext *MsgExt
+		if idx%2 == 0 {
+			ext = &MsgExt{}
+		} else {
+			ext = &MsgExt{
+				TraceID:     12345,
+				DispatchTag: "tag123",
+				Custom:      map[string]string{"key1": "val1", "key2": "val2"},
+			}
+		}
+		badExtList = append(badExtList, ext)
+		badMsgs = append(badMsgs, []byte("bad_test_case"))
+	}
+	EnsureTopicWithExt(t, 4150, topicName, 0, true)
+	ensureInitChannelExt(t, topicName, false)
+
+	// wait nsqd report to lookupd
+	time.Sleep(time.Second * 3)
+
+	config := NewConfig()
+
+	config.PubStrategy = PubRR
+	config.DialTimeout = time.Second
+	config.ReadTimeout = time.Second * 6
+	config.HeartbeatInterval = time.Second * 3
+	w, err := NewTopicProducerMgr([]string{topicName}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4161")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	err = w.MultiPublishWithJsonExt(topicName, msgs, extList)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	err = w.MultiPublishWithJsonExt(topicName, badMsgs, badExtList)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	msgsRead := readExtMessages(topicName, t, msgCount, false)
+	for i, msg := range msgsRead {
+		if i%2 == 0 {
+			assert.Contains(t, string(msg.ExtBytes), "{}")
+			assert.Equal(t, msg.ExtVer, uint8(4))
+		} else {
+			assert.Equal(t, msg.ExtVer, uint8(4))
+			assert.Equal(t, msg.GetTraceID(), uint64(12345))
+			jsonExt, err := msg.GetJsonExt()
+			if err != nil {
+				t.Fatalf(err.Error())
+			}
+			assert.Equal(t, jsonExt.TraceID, uint64(12345))
+			assert.Equal(t, jsonExt.DispatchTag, "tag123")
+			assert.Equal(t, jsonExt.Custom["key1"], "val1")
+			assert.Equal(t, jsonExt.Custom["key2"], "val2")
+		}
+	}
+}
+
 func TestTopicProducerMgrWithTagDynamicTopic(t *testing.T) {
 	testTopicProducerMgrWithTag(t, true)
 }
@@ -1175,7 +1269,7 @@ func readMessages2(topicName string, t *testing.T, msgCount int, useLookup bool,
 	}
 }
 
-func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup bool) {
+func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup bool) []*Message {
 	config := NewConfig()
 	config.DefaultRequeueDelay = 0
 	config.MaxBackoffDuration = 50 * time.Millisecond
@@ -1215,6 +1309,7 @@ func readExtMessages(topicName string, t *testing.T, msgCount int, useLookup boo
 	if h.messagesFailed != 1 {
 		t.Fatal("failed message not done")
 	}
+	return h.Msgs
 }
 
 type mockProducerConn struct {
