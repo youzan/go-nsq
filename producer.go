@@ -621,6 +621,7 @@ type TopicProducerMgr struct {
 	lookupdRecheckChan chan int
 	newTopicChan       chan string
 	newTopicRspChan    chan int
+	backgroundBuffer   chan *backgroundCommand
 }
 
 // use part=-1 to handle all partitions of topic
@@ -1124,26 +1125,23 @@ func (self *TopicProducerMgr) getPartitionProducerInfo(topic string) (*TopicPart
 	return partProducerInfo, nil
 }
 
-//get producer based on pass in nsqd address
-func (self *TopicProducerMgr) getNSQDProducer(addr string) (*Producer, error) {
-	self.producerMtx.RLock()
-	producer, ok := self.producers[addr]
-	self.producerMtx.RUnlock()
-	if !ok {
-		removed, ok := self.removingProducers[addr]
-		if !ok {
-			return nil, ErrNoProducer
-		}
-		producer = removed.producer
-	}
-	return producer, nil
-}
-
 func (self *TopicProducerMgr) getProducerWithPartitionId(topic string, pId int) (*Producer, int, error) {
-	partProducerInfo, err := self.getPartitionProducerInfo(topic)
-	if err != nil {
-		return nil, -1, err
+	self.topicMtx.RLock()
+	partProducerInfo, ok := self.topics[topic]
+	self.topicMtx.RUnlock()
+	if !ok {
+		self.newTopicChan <- topic
+		select {
+		case <-self.newTopicRspChan:
+			self.topicMtx.RLock()
+			partProducerInfo, ok = self.topics[topic]
+			self.topicMtx.RUnlock()
+			if !ok {
+				return nil, -1, ErrTopicNotSet
+			}
+		}
 	}
+
 	pi := partProducerInfo.getSpecificPartitionInfo(pId)
 	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pId, pi)
 	if pi.addr == "" {
@@ -1153,17 +1151,34 @@ func (self *TopicProducerMgr) getProducerWithPartitionId(topic string, pId int) 
 		}
 		return nil, pId, ErrNoProducer
 	}
-	producer, err := self.getNSQDProducer(pi.addr)
-	if err != nil {
-		return nil, -1, err
+	self.producerMtx.RLock()
+	producer, ok := self.producers[pi.addr]
+	self.producerMtx.RUnlock()
+	if !ok {
+		removed, ok := self.removingProducers[pi.addr]
+		if !ok {
+			return nil, pId, ErrNoProducer
+		}
+		producer = removed.producer
 	}
-	return producer, pId, nil
+	return producer.getProducer(), pId, nil
 }
 
 func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*Producer, int, error) {
-	partProducerInfo, err := self.getPartitionProducerInfo(topic)
-	if err != nil {
-		return nil, -1, err
+	self.topicMtx.RLock()
+	partProducerInfo, ok := self.topics[topic]
+	self.topicMtx.RUnlock()
+	if !ok {
+		self.newTopicChan <- topic
+		select {
+		case <-self.newTopicRspChan:
+			self.topicMtx.RLock()
+			partProducerInfo, ok = self.topics[topic]
+			self.topicMtx.RUnlock()
+			if !ok {
+				return nil, -1, ErrTopicNotSet
+			}
+		}
 	}
 	pid, addr := self.getNextProducerAddr(partProducerInfo, partitionKey)
 	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pid, addr)
@@ -1174,9 +1189,15 @@ func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*P
 		}
 		return nil, pid, ErrNoProducer
 	}
-	producer, err := self.getNSQDProducer(addr)
-	if err != nil {
-		return nil, -1, err
+	self.producerMtx.RLock()
+	producer, ok := self.producers[addr]
+	self.producerMtx.RUnlock()
+	if !ok {
+		removed, ok := self.removingProducers[addr]
+		if !ok {
+			return nil, pid, ErrNoProducer
+		}
+		producer = removed.producer
 	}
 	return producer.getProducer(), pid, nil
 }
@@ -1376,7 +1397,7 @@ func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
 
 func (self *TopicProducerMgr) PublishWithJsonExtAndPartitionId(topic string, partition int, body []byte, ext *MsgExt) (NewMessageID,
 uint64, uint32, error) {
-	resp, err := self.doCommandWithRetryAndPartition(topic, partition, func(pid int) (*Command, error) {
+	resp, err := self.doCommandWithTimeoutAndRetryAndPartition(topic, partition, 0, 3, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			return nil, errors.New(fmt.Sprintf("invalid partition: %v", partition))
 		}
@@ -1500,7 +1521,7 @@ func (self *TopicProducerMgr) PublishAndTrace(topic string, traceID uint64, body
 // pub with trace will return the message id and the message offset and size in the queue
 func (self *TopicProducerMgr) PublishAndTraceWithPartitionId(topic string, partition int, traceID uint64, body []byte) (NewMessageID,
 uint64, uint32, error) {
-	resp, err := self.doCommandWithRetryAndPartition(topic, partition, func(pid int) (*Command, error) {
+	resp, err := self.doCommandWithTimeoutAndRetryAndPartition(topic, partition, 0, 3, func(pid int) (*Command, error) {
 		return PublishTrace(topic, strconv.Itoa(pid), traceID, body)
 	})
 	if err != nil {
@@ -1518,7 +1539,7 @@ uint64, uint32, error) {
 }
 
 func (self *TopicProducerMgr) PublishWithPartitionId(topic string, partition int, body []byte) error {
-	_, err := self.doCommandWithRetryAndPartition(topic, partition, func(pid int) (*Command, error) {
+	_, err := self.doCommandWithTimeoutAndRetryAndPartition(topic, partition, 0, 3, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return nil, errors.New(fmt.Sprintf("invalid partition: %v", partition))
@@ -1633,14 +1654,19 @@ func (self *TopicProducerMgr) MultiPublishAndTrace(topic string, traceIDList []u
 	return id, offset, rawSize, err
 }
 
-func (self *TopicProducerMgr) doCommandWithRetryAndPartition(topic string, partition int,
+func (self *TopicProducerMgr) doCommandWithTimeoutAndRetryAndPartition(topic string, partition int, timeout time.Duration, maxRetry uint32,
 commandFunc func(pid int) (*Command, error)) ([]byte, error) {
 	retry := uint32(0)
 	var err error
 	var producer *Producer
 	var resp []byte
 	pid := -1
-	for retry < 3 {
+	select {
+	case <-self.exitChan:
+		return nil, ErrStopped
+	default:
+	}
+	for retry < maxRetry {
 		retry++
 		producer, pid, err = self.getProducerWithPartitionId(topic, partition)
 		if err != nil {
@@ -1657,10 +1683,19 @@ commandFunc func(pid int) (*Command, error)) ([]byte, error) {
 			self.log(LogLevelError, "get command err: %v", err)
 			return nil, err
 		}
+		tstart := time.Now()
 		self.log(LogLevelDebug, "do command to producer %v for topic %v-%v", producer.addr, topic, pid)
-		resp, err = producer.sendCommand(cmd)
+		if timeout > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			resp, err = producer.sendCommandWithContext(ctx, cmd)
+			cancel()
+		} else {
+			resp, err = producer.sendCommand(cmd)
+		}
+		cost := time.Since(tstart)
 		if err != nil {
-			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v", producer.addr, topic, pid, err)
+			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v, cost: %v",
+				producer.addr, topic, pid, err, cost)
 			if atomic.LoadInt32(&producer.failedCnt) > 3 {
 				self.removeProducer(producer.addr)
 			} else if IsFailedOnNotLeader(err) || IsFailedOnNotWritable(err) ||
@@ -1674,6 +1709,9 @@ commandFunc func(pid int) (*Command, error)) ([]byte, error) {
 			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
+			if cost >= time.Second/2 {
+				self.log(LogLevelInfo, "do command to producer %v for topic %v-%v slow cost: %v", producer.addr, topic, pid, cost)
+			}
 			break
 		}
 	}
