@@ -931,6 +931,10 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		self.topics[topicName] = newProducerInfo
 		self.topicMtx.Unlock()
 	}
+	//leave removing expired producer to timer
+	if newTopic != "" {
+		return
+	}
 	self.producerMtx.Lock()
 	if len(allTopicParts) > 0 {
 		for k, p := range self.producers {
