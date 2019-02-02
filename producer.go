@@ -87,11 +87,7 @@ func (t *ProducerTransaction) finish(stop chan int) {
 	if t.doneChan != nil {
 		select {
 		case t.doneChan <- t:
-		default:
-			select {
-			case <-t.doneChan:
-			case <-stop:
-			}
+		case <-stop:
 		}
 	}
 }
@@ -249,7 +245,6 @@ func (w *Producer) sendCommandWithContext(ctx context.Context, cmd *Command) ([]
 	doneChan := make(chan *ProducerTransaction, 1)
 	err := w.sendCommandAsyncWithContext(ctx, cmd, doneChan, nil)
 	if err != nil {
-		close(doneChan)
 		return nil, err
 	}
 	select {
@@ -1812,7 +1807,7 @@ func (self *TopicProducerMgr) handleBackgroundRetry() {
 func (self *TopicProducerMgr) retryBatchCommand(bgcList []*backgroundCommand, quit chan int) error {
 	errCh := make(chan error, 1)
 	to := self.config.PubTimeout/2 + time.Second
-	doneCh := make(chan *ProducerTransaction, len(bgcList))
+	doneCh := make(chan *ProducerTransaction, len(bgcList)+1)
 	sendCnt := 0
 	for _, bgc := range bgcList {
 		if bgc.done {

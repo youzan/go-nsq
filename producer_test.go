@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/spaolacci/murmur3"
-	"github.com/stretchr/testify/assert"
 	"io/ioutil"
 	"log"
 	"net"
@@ -16,6 +14,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/spaolacci/murmur3"
+	"github.com/stretchr/testify/assert"
 )
 
 type ConsumerHandler struct {
@@ -263,7 +264,7 @@ func TestProducerMultiPublishAsync(t *testing.T) {
 		testData = append(testData, []byte("multipublish_test_case"))
 	}
 
-	responseChan := make(chan *ProducerTransaction)
+	responseChan := make(chan *ProducerTransaction, 1)
 	err := w.MultiPublishAsync(topicName, testData, responseChan, "test0", 1)
 	if err != nil {
 		t.Fatalf(err.Error())
@@ -1146,7 +1147,7 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 		wg.Add(1)
 		go func(tname string) {
 			defer wg.Done()
-			responseChan := make(chan *ProducerTransaction)
+			responseChan := make(chan *ProducerTransaction, 1)
 			err := w.MultiPublishAsync(tname, testData, responseChan, tname, 1)
 			if err != nil {
 				t.Fatal(err.Error())
