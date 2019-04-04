@@ -614,17 +614,20 @@ func (r *Consumer) queryLookupd() {
 		r.log(LogLevelDebug, "producer found %s , partition: %v", nsqdAddr, pid)
 	}
 
-	if len(data.Partitions) == 0 {
-		// for old lookup, no partition info for node.
-		// we always treat partition as -1
-		for _, producer := range data.Producers {
-			broadcastAddress := producer.BroadcastAddress
-			port := producer.TCPPort
-			joined := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
+	// for old lookup, which do not exist in partition info for node.
+	// we always treat partition as -1
+	for _, producer := range data.Producers {
+		broadcastAddress := producer.BroadcastAddress
+		port := producer.TCPPort
+		joined := net.JoinHostPort(broadcastAddress, strconv.Itoa(port))
+
+		//skip if nsqd exists in partitions
+		if _, ok := partInfo[joined]; !ok {
 			nsqdAddrs = append(nsqdAddrs, joined)
 			r.log(LogLevelDebug, "producer found %s without partition", joined)
 		}
 	}
+
 	// apply filter
 	if discoveryFilter, ok := r.behaviorDelegate.(DiscoveryFilter); ok {
 		nsqdAddrs = discoveryFilter.Filter(nsqdAddrs)
