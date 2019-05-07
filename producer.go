@@ -1269,6 +1269,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetryAndContextTemplate(
 	retry := uint32(0)
 	var err error
 	var producer *Producer
+	var cmd *Command
 	pid := -1
 
 	select {
@@ -1289,7 +1290,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetryAndContextTemplate(
 			}
 		}
 
-		cmd, err := commandFunc(pid)
+		cmd, err = commandFunc(pid)
 		if err != nil {
 			return err
 		}
@@ -1681,6 +1682,7 @@ func (self *TopicProducerMgr) doCommandWithTimeoutAndRetryTemplate(topic string,
 	var err error
 	var producer *Producer
 	var resp []byte
+	var cmd *Command
 	pid := -1
 	select {
 	case <-self.exitChan:
@@ -1699,7 +1701,7 @@ func (self *TopicProducerMgr) doCommandWithTimeoutAndRetryTemplate(topic string,
 				break
 			}
 		}
-		cmd, err := commandFunc(pid)
+		cmd, err = commandFunc(pid)
 		if err != nil {
 			self.log(LogLevelError, "get command err: %v", err)
 			return nil, err

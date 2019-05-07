@@ -612,6 +612,42 @@ func TestTopicProducerMgrPubOrdered(t *testing.T) {
 	readMessages2(topicName, t, msgCount, true, true)
 }
 
+func TestTopicProducerMgrPubShouldFailed(t *testing.T) {
+	stopC := make(chan struct{})
+	var meta metaInfo
+	meta.PartitionNum = 1
+	meta.Replica = 1
+	topicName := "topic_producer_mgr_pub_fail" + strconv.Itoa(int(time.Now().Unix()))
+	topicList := make([]string, 0)
+	topicList = append(topicList, topicName)
+	ensureFakedLookup(t, "127.0.0.1:4165", meta, topicList, stopC)
+	defer func() {
+		close(stopC)
+		time.Sleep(time.Second)
+	}()
+
+	msgCount := 100
+
+	config := NewConfig()
+	w, err := NewTopicProducerMgr([]string{topicName}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelDebug)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4165")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	for i := 0; i < msgCount; i++ {
+		err := w.Publish(topicName, []byte("publish_test_case"))
+		if err == nil {
+			t.Error("should return error since pub failed")
+			break
+		}
+	}
+}
+
 func TestTopicProducerMgrRemoveFailedLookupd(t *testing.T) {
 	topicName := "topic_producer_mgr_failed_lookup" + strconv.Itoa(int(time.Now().Unix()))
 	topicList := make([]string, 0)
