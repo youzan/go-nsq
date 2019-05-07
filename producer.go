@@ -1352,13 +1352,22 @@ func (self *TopicProducerMgr) PublishWithExtAndRetryBackground(topic string, bod
 }
 
 func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
-	_, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
+	respByte, err := self.doCommandWithRetry(topic, nil, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			// pub to old nsqd that not support partition
 			return Publish(topic, body), nil
 		}
 		return PublishWithPart(topic, strconv.Itoa(pid), body), nil
 	})
+
+	// success resp is OK
+	if string(respByte) == "" {
+		if err != nil {
+			return errors.New("something is error, " + err.Error())
+		}
+		return errors.New("response is null, something is error ! ")
+	}
+
 	return err
 }
 
