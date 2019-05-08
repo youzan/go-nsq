@@ -527,7 +527,7 @@ func TestTopicProducerMgrPubBackground(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	w.SetLogger(newTestLogger(t), LogLevelDebug)
 	lookupList := make([]string, 0)
 	lookupList = append(lookupList, "127.0.0.1:4161")
 	w.AddLookupdNodes(lookupList)
@@ -548,7 +548,7 @@ func TestTopicProducerMgrPubBackground(t *testing.T) {
 	// wait test read response timeout
 	time.Sleep(time.Second * 20)
 	testingTimeout = false
-	time.Sleep(time.Second)
+	time.Sleep(2 * time.Second)
 
 	err = w.Publish(topicName, []byte("bad_test_case"))
 	if err != nil {
@@ -626,9 +626,10 @@ func TestTopicProducerMgrPubShouldFailed(t *testing.T) {
 		time.Sleep(time.Second)
 	}()
 
-	msgCount := 100
+	msgCount := 50
 
 	config := NewConfig()
+	config.PubTimeout = time.Second
 	w, err := NewTopicProducerMgr([]string{topicName}, config)
 	if err != nil {
 		t.Fatal(err)

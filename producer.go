@@ -401,6 +401,9 @@ func (w *Producer) popTransaction(frameType int32, data []byte) {
 	} else {
 		t.ResponseData = data
 	}
+	if testingTimeout {
+		return
+	}
 	t.finish(w.exitChan)
 }
 
@@ -446,9 +449,6 @@ func (w *Producer) log(lvl LogLevel, line string, args ...interface{}) {
 }
 
 func (w *Producer) onConnResponse(c *Conn, data []byte) {
-	if testingTimeout {
-		return
-	}
 	w.responseChan <- data
 }
 
