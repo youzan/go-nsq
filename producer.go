@@ -820,6 +820,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 
 	allTopicParts := make([]AddrPartInfo, 0)
 	cleanProducers := make(map[string]*producerPool)
+	removeProducer := true
 	for topicName, topicUrl := range topicQueryList {
 		if newTopic != "" {
 			if topicName != newTopic {
@@ -842,6 +843,8 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		var data lookupResp
 		err = apiRequestNegotiateV1("GET", topicUrl, nil, &data)
 		if err != nil {
+			//if there is any failure in lookup request, do not remove producer after topic lookup loop
+			removeProducer = false
 			// TODO: handle removing the failed nsqlookup and try get the new list.
 			self.log(LogLevelError, "error querying nsqlookupd (%s) - %s", topicUrl, err)
 			continue
@@ -927,7 +930,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		self.topicMtx.Unlock()
 	}
 	//leave removing expired producer to timer
-	if newTopic != "" {
+	if newTopic != "" || !removeProducer {
 		return
 	}
 	self.producerMtx.Lock()
