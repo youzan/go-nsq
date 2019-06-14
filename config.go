@@ -163,13 +163,13 @@ type Config struct {
 	Snappy       bool `opt:"snappy"`
 
 	// Size of the buffer (in bytes) used by nsqd for buffering writes to this connection
-	OutputBufferSize int64 `opt:"output_buffer_size" default:"16384"`
+	OutputBufferSize int64 `opt:"output_buffer_size" default:"0"`
 	// Timeout used by nsqd before flushing buffered writes (set to 0 to disable).
 	//
 	// WARNING: configuring clients with an extremely low
 	// (< 25ms) output_buffer_timeout has a significant effect
 	// on nsqd CPU usage (particularly with > 50 clients connected).
-	OutputBufferTimeout time.Duration `opt:"output_buffer_timeout" default:"250ms"`
+	OutputBufferTimeout time.Duration `opt:"output_buffer_timeout" default:"150ms"`
 
 	// Maximum number of messages to allow in flight (concurrency knob)
 	MaxInFlight int `opt:"max_in_flight" min:"0" default:"20"`
