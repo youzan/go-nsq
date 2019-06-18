@@ -720,7 +720,7 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 		delete(r.pendingConnections, cid)
 		r.mtx.Unlock()
 		r.log(LogLevelInfo, "consumer cleanup connection: (%s) ", cid)
-		conn.Close()
+		conn.CloseAll()
 	}
 
 	resp, err := conn.Connect()
@@ -827,9 +827,9 @@ func (r *Consumer) DisconnectFromNSQD(addr string, part string) error {
 	conn, ok := r.connections[addr]
 
 	if ok {
-		conn.Close()
+		conn.CloseRead()
 	} else if pendingOk {
-		pendingConn.Close()
+		pendingConn.CloseRead()
 	}
 
 	return nil
@@ -898,7 +898,7 @@ func (r *Consumer) onConnResponse(c *Conn, data []byte) {
 		// we can assume we will not receive any more messages over this channel
 		// (but we can still write back responses)
 		r.log(LogLevelInfo, "(%s) received CLOSE_WAIT from nsqd", c.String())
-		c.Close()
+		c.CloseRead()
 	}
 }
 
@@ -922,7 +922,7 @@ func (r *Consumer) onConnError(c *Conn, data []byte) {
 func (r *Consumer) onConnHeartbeat(c *Conn) {}
 
 func (r *Consumer) onConnIOError(c *Conn, err error) {
-	c.Close()
+	c.CloseAll()
 }
 
 func (r *Consumer) onConnClose(c *Conn) {

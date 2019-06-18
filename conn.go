@@ -158,7 +158,7 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 
 	_, err = c.Write(MagicV2)
 	if err != nil {
-		c.Close()
+		c.close()
 		return nil, fmt.Errorf("[%s] failed to write magic - %s", c.addr, err)
 	}
 
@@ -187,12 +187,16 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 }
 
 // Close idempotently initiates connection close
-func (c *Conn) Close() error {
+func (c *Conn) CloseRead() error {
 	atomic.StoreInt32(&c.closeFlag, 1)
 	if c.conn != nil && atomic.LoadInt64(&c.messagesInFlight) == 0 {
 		return c.conn.CloseRead()
 	}
 	return nil
+}
+
+func (c *Conn) CloseAll() {
+	c.close()
 }
 
 // IsClosing indicates whether or not the
@@ -495,7 +499,7 @@ func (c *Conn) auth(secret string) error {
 func (c *Conn) readLoop() {
 	delegate := &connMessageDelegate{c}
 	for {
-		if atomic.LoadInt32(&c.closeFlag) == 1 {
+		if c.IsClosing() {
 			goto exit
 		}
 
@@ -604,7 +608,7 @@ func (c *Conn) writeLoop() {
 			}
 
 			if msgsInFlight == 0 &&
-				atomic.LoadInt32(&c.closeFlag) == 1 {
+				c.IsClosing() {
 				c.close()
 				continue
 			}
@@ -645,7 +649,10 @@ func (c *Conn) close() {
 	c.stopper.Do(func() {
 		c.log(LogLevelInfo, "beginning close")
 		close(c.exitChan)
-		c.conn.CloseRead()
+		atomic.StoreInt32(&c.closeFlag, 1)
+		if c.conn != nil {
+			c.conn.CloseRead()
+		}
 
 		c.wg.Add(1)
 		go c.cleanup()
@@ -658,6 +665,7 @@ func (c *Conn) cleanup() {
 	<-c.drainReady
 	ticker := time.NewTicker(100 * time.Millisecond)
 	lastWarning := time.Now()
+	start := time.Now()
 	// writeLoop has exited, drain any remaining in flight messages
 	for {
 		// we're racing with readLoop which potentially has a message
@@ -669,6 +677,10 @@ func (c *Conn) cleanup() {
 			msgsInFlight = atomic.AddInt64(&c.messagesInFlight, -1)
 		case <-ticker.C:
 			msgsInFlight = atomic.LoadInt64(&c.messagesInFlight)
+			if time.Since(start) > time.Minute {
+				c.log(LogLevelWarning, "draining... waiting for %d messages in flight too long since: %v", msgsInFlight, start)
+				goto exit
+			}
 		}
 		if msgsInFlight > 0 {
 			if time.Now().Sub(lastWarning) > time.Second {
