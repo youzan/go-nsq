@@ -158,7 +158,7 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 
 	_, err = c.Write(MagicV2)
 	if err != nil {
-		c.Close()
+		c.close()
 		return nil, fmt.Errorf("[%s] failed to write magic - %s", c.addr, err)
 	}
 
@@ -187,12 +187,16 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 }
 
 // Close idempotently initiates connection close
-func (c *Conn) Close() error {
+func (c *Conn) CloseRead() error {
 	atomic.StoreInt32(&c.closeFlag, 1)
 	if c.conn != nil && atomic.LoadInt64(&c.messagesInFlight) == 0 {
 		return c.conn.CloseRead()
 	}
 	return nil
+}
+
+func (c *Conn) CloseAll() {
+	c.close()
 }
 
 // IsClosing indicates whether or not the
