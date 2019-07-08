@@ -1376,9 +1376,13 @@ func (m *mockProducerConn) Connect() (*IdentifyResponse, error) {
 	return &IdentifyResponse{}, nil
 }
 
-func (m *mockProducerConn) Close() error {
+func (m *mockProducerConn) CloseRead() error {
 	close(m.closeCh)
 	return nil
+}
+
+func (m *mockProducerConn) CloseAll() {
+	close(m.closeCh)
 }
 
 func (m *mockProducerConn) WriteCommand(cmd *Command) error {

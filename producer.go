@@ -37,7 +37,8 @@ type producerConn interface {
 	String() string
 	SetLogger(logger, LogLevel, string)
 	Connect() (*IdentifyResponse, error)
-	Close() error
+	CloseAll()
+	CloseRead() error
 	WriteCommand(*Command) error
 }
 
@@ -175,7 +176,7 @@ func (w *Producer) Stop() {
 	}
 	w.log(LogLevelInfo, "stopping")
 	close(w.exitChan)
-	w.close()
+	w.close(false)
 	w.guard.Unlock()
 	w.wg.Wait()
 }
@@ -333,7 +334,7 @@ func (w *Producer) connect() error {
 
 	_, err := w.conn.Connect()
 	if err != nil {
-		w.conn.Close()
+		w.conn.CloseAll()
 		w.log(LogLevelError, "(%s) error connecting to nsqd - %s", w.addr, err)
 		atomic.AddInt32(&w.failedCnt, 1)
 		return err
@@ -347,11 +348,15 @@ func (w *Producer) connect() error {
 	return nil
 }
 
-func (w *Producer) close() {
+func (w *Producer) close(force bool) {
 	if !atomic.CompareAndSwapInt32(&w.state, StateConnected, StateDisconnected) {
 		return
 	}
-	w.conn.Close()
+	if force {
+		w.conn.CloseAll()
+	} else {
+		w.conn.CloseRead()
+	}
 	go func() {
 		// we need to handle this in a goroutine so we don't
 		// block the caller from making progress
@@ -371,7 +376,7 @@ func (w *Producer) router() {
 			err := w.conn.WriteCommand(t.cmd)
 			if err != nil {
 				w.log(LogLevelError, "(%s) sending command - %s", w.conn.String(), err)
-				w.close()
+				w.close(true)
 			}
 		case data := <-w.responseChan:
 			w.popTransaction(FrameTypeResponse, data)
@@ -454,7 +459,7 @@ func (w *Producer) onConnResponse(c *Conn, data []byte) {
 
 func (w *Producer) onConnError(c *Conn, data []byte) { w.errorChan <- data }
 func (w *Producer) onConnHeartbeat(c *Conn)          {}
-func (w *Producer) onConnIOError(c *Conn, err error) { w.close() }
+func (w *Producer) onConnIOError(c *Conn, err error) { w.close(true) }
 func (w *Producer) onConnClose(c *Conn) {
 	w.guard.Lock()
 	defer w.guard.Unlock()
