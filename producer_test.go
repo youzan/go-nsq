@@ -1248,6 +1248,57 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 	wg.Wait()
 }
 
+func TestRemoveUnusedProducerAsync(t *testing.T) {
+	topicName := "topic_remove_unused_producer_async" + strconv.Itoa(int(time.Now().Unix()))
+
+	w := TopicProducerMgr{}
+	w.producers = make(map[string]*producerPool)
+	w.topics = make(map[string]*TopicPartProducerInfo, len(w.topics))
+	w.removingProducers = make(map[string]*RemoveProducerInfo)
+	addr := "127.0.0.3"
+	anotherAddr := "127.0.0.4"
+	newProd, _ := newProducerPool(addr, &w.config)
+	anotherNewProd, _ := newProducerPool(anotherAddr, &w.config)
+	newProd.SetLogger(w.getLogger())
+	w.producers[addr] = newProd
+	anotherNewProd.SetLogger(w.getLogger())
+	w.producers[anotherAddr] = anotherNewProd
+	partProducerInfo := NewTopicPartProducerInfo(metaInfo{}, false)
+
+	allTopicParts := make([]AddrPartInfo, 0)
+	addrPartInfo := AddrPartInfo{"127.0.0.3",0}
+	addrPartInfo1 := AddrPartInfo{"127.0.0.4",1}
+	allTopicParts = append(allTopicParts, addrPartInfo)
+	partProducerInfo.allPartitions = append(partProducerInfo.allPartitions, addrPartInfo)
+	partProducerInfo.allPartitions = append(partProducerInfo.allPartitions, addrPartInfo1)
+	w.topics[topicName] = partProducerInfo
+	w.removeUnusedProducerAsync(allTopicParts)
+	if (len(w.removingProducers) != 1){
+		t.Fatalf("TestRemoveUnusedProducerAsync removing producers num after remove expected:%d actual:%d",
+			1, len(w.removingProducers))
+	}
+	if (w.removingProducers["127.0.0.4"] == nil){
+		t.Fatalf("TestRemoveUnusedProducerAsync remove wrong producers expected:%s",
+			"127.0.0.4")
+	}
+	if (len(w.producers) != 1){
+		t.Fatalf("TestRemoveUnusedProducerAsync existing producers num after remove expected:%d actual:%d",
+			1, len(w.producers))
+	}
+	if (w.producers["127.0.0.3"] == nil){
+		t.Fatalf("TestRemoveUnusedProducerAsync remove wrong producers expected existing producer is :%s, but not exist",
+			"127.0.0.3")
+	}
+	w.removingProducers["127.0.0.4"].ts = time.Now().Add(time.Minute * (-10))
+	w.removeUnusedProducerAsync(allTopicParts)
+
+	for _, p := range w.topics[topicName].allPartitions{
+		if (p.addr == "127.0.0.4") {
+			t.Fatalf("TestRemoveUnusedProducerAsync topic partitions should be removed addr: %s but still exist",
+				"127.0.0.4")
+		}
+	}
+}
 func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) {
 	readMessages2(topicName, t, msgCount, useLookup, false)
 }
