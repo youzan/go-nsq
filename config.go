@@ -96,7 +96,9 @@ type Config struct {
 	DialTimeout time.Duration `opt:"dial_timeout" default:"5s"`
 
 	// Deadlines for network reads and writes
-	ReadTimeout  time.Duration `opt:"read_timeout" max:"5m" default:"60s"`
+	// for consumer the read timeout should be large than the server heartbeat interval,
+	// so keep it open while no message need consume
+	ReadTimeout  time.Duration `opt:"read_timeout" max:"5m" default:"120s"`
 	WriteTimeout time.Duration `opt:"write_timeout" max:"5m" default:"1s"`
 	PubTimeout   time.Duration `opt:"pub_timeout" max:"1m" default:"10s"`
 

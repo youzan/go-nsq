@@ -1069,7 +1069,10 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal) {
 }
 
 func (r *Consumer) backoff(d time.Duration) {
-	atomic.StoreInt64(&r.backoffDuration, d.Nanoseconds())
+	// TODO: the backoff should consider the connection, since it may part of
+	// connections need to be backoff while the left connections need consume as normal
+	until := time.Now().Add(d).UnixNano()
+	atomic.StoreInt64(&r.backoffDuration, until)
 	time.AfterFunc(d, r.resume)
 }
 
@@ -1092,9 +1095,9 @@ func (r *Consumer) resume() {
 	r.rngMtx.Unlock()
 	choice := conns[idx]
 
-	r.log(LogLevelDebug,
-		"(%s) backoff timeout expired, sending RDY 1",
-		choice.String())
+	r.log(LogLevelInfo,
+		"(%s) backoff timeout expired, sending RDY 1, left conn: %v",
+		choice.String(), len(conns))
 
 	// while in backoff only ever let 1 message at a time through
 	err := r.updateRDY(choice, 1)
@@ -1113,7 +1116,11 @@ func (r *Consumer) inBackoff() bool {
 }
 
 func (r *Consumer) inBackoffTimeout() bool {
-	return atomic.LoadInt64(&r.backoffDuration) > 0
+	until := atomic.LoadInt64(&r.backoffDuration)
+	if time.Now().UnixNano() > until {
+		return false
+	}
+	return true
 }
 
 func (r *Consumer) maybeUpdateRDY(conn *Conn) {
@@ -1142,11 +1149,42 @@ func (r *Consumer) maybeUpdateRDY(conn *Conn) {
 
 func (r *Consumer) rdyLoop() {
 	redistributeTicker := time.NewTicker(r.config.RDYRedistributeInterval)
+	lastResume := time.Now()
 
 	for {
 		select {
 		case <-redistributeTicker.C:
 			r.redistributeRDY()
+			// if all conn is 0 rdy and back off time is past,
+			// we try resume one
+			conns := r.conns()
+			if len(conns) == 0 {
+				continue
+			}
+			if r.inBackoffTimeout() {
+				continue
+			}
+			if time.Since(lastResume) < time.Minute*5 {
+				// do not auto resume too often, only do this
+				// if we consume no messages for a long time
+				continue
+			}
+			needResume := true
+			// whether it is resumed by others or by this loop,
+			// we should resume later next time
+			lastResume = time.Now()
+			for _, conn := range conns {
+				r := conn.RDY()
+				if r > 0 {
+					needResume = false
+					break
+				}
+			}
+			if needResume {
+				r.log(LogLevelInfo, "try auto resume since no any active for a while, left conns: %v ",
+					len(conns))
+				r.resume()
+			}
 		case <-r.exitChan:
 			goto exit
 		}
@@ -1271,7 +1309,7 @@ func (r *Consumer) redistributeRDY() {
 		c := possibleConns[i]
 		// delete
 		possibleConns = append(possibleConns[:i], possibleConns[i+1:]...)
-		r.log(LogLevelDebug, "(%s) redistributing RDY", c.String())
+		r.log(LogLevelInfo, "(%s) redistributing RDY 1", c.String())
 		r.updateRDY(c, 1)
 	}
 }
