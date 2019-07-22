@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -557,6 +558,58 @@ func TestTopicProducerMgrPubBackground(t *testing.T) {
 
 	readMessages2(topicName, t, msgCount, true, true)
 	time.Sleep(time.Second * 5)
+}
+
+func TestProducerMgrPublishWithTimeout(t *testing.T) {
+
+	topicName := "topic_producer_mgr_pub_timeout" + strconv.Itoa(int(time.Now().Unix()))
+	EnsureTopic(t, 4150, topicName, 0)
+
+	testingTimeout = true
+	testingSendTimeout = true
+	defer func() {
+		testingSendTimeout = false
+		testingTimeout = false
+	}()
+	time.Sleep(time.Second)
+
+	config := NewConfig()
+	config.PubTimeout = time.Second * 2
+	config.PubMaxBackgroundRetry = 10
+	config.PubStrategy = PubRR
+	w, err := NewTopicProducerMgr([]string{topicName}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelDebug)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4161")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	moreBeginTime := time.Now().Unix()
+	err = w.PublishWithTimeout(topicName, []byte("publish_test_case"), time.Second * 3)
+	if time.Now().Unix() - moreBeginTime <= 3 {
+		t.Fatalf("func timeout param have not override config timeout")
+	}
+	checkDeadlineExceeded(err, t)
+
+
+	lessBeginTime := time.Now().Unix()
+	err = w.PublishWithTimeout(topicName, []byte("publish_test_case"), time.Second)
+	if time.Now().Unix() - lessBeginTime >= 2 {
+		t.Fatalf("func timeout param have not override config timeout")
+	}
+	checkDeadlineExceeded(err, t)
+}
+
+func checkDeadlineExceeded(err error, t *testing.T)  {
+	if err != context.DeadlineExceeded {
+		if err != nil && strings.Contains(err.Error(), "deadline exceeded") {
+			return
+		}
+		t.Fatalf("error %s", err)
+	}
 }
 
 func TestTopicProducerMgrPubOrdered(t *testing.T) {
