@@ -3,13 +3,18 @@ package nsq
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +30,7 @@ type ConsumerHandler struct {
 	messagesGood   int
 	messagesFailed int
 	Msgs           []*Message
+	checkResult    map[string]bool
 }
 
 func (h *ConsumerHandler) LogFailedMessage(message *Message) {
@@ -42,8 +48,15 @@ func (h *ConsumerHandler) HandleMessage(message *Message) error {
 	if msg == "bad_test_case" {
 		return errors.New("fail this message")
 	}
-	if msg != "multipublish_test_case" && msg != "publish_test_case" {
+	if msg != "multipublish_test_case" && msg != "publish_test_case" && !strings.Contains(msg, "lookupd_test_case"){
 		h.t.Error("message 'action' was not correct:", msg)
+	}
+	if strings.Contains(msg, "lookupd_test_case") {
+		result, ok := h.checkResult[msg]
+		if ok && result == true{
+			h.t.Error("message 'action' was duplicated:", msg)
+		}
+		h.checkResult[msg] = true
 	}
 	h.t.Logf("got message :%v ", msg)
 	h.messagesGood++
@@ -1299,10 +1312,173 @@ func TestRemoveUnusedProducerAsync(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryLookupd(t *testing.T) {
+	stubFlag := false
+	stubFlagMutex := sync.Mutex{}
+	topicName := "topic_query_lookupd1" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 10
+	topicList := make([]string, 0)
+	for i := 0; i < 3; i++ {
+		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 0)
+		ensureInitChannel(t, "t"+strconv.Itoa(i)+topicName, false)
+	}
+
+	// wait nsqd report to lookupd
+	time.Sleep(time.Second * 3)
+
+	config := NewConfig()
+	initTopics := make([]string, 0)
+	config.PubStrategy = PubRR
+	config.DialTimeout = time.Second
+	config.ReadTimeout = time.Second * 6
+	config.HeartbeatInterval = time.Second * 3
+	w, err := NewTopicProducerMgr(initTopics, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4165")
+	w.AddLookupdNodes(lookupList)
+	var meta metaInfo
+	meta.PartitionNum = 1
+	meta.Replica = 1
+	stopC := make(chan struct{})
+	var ensureFakedLookup = func (t *testing.T, addr string, meta metaInfo, topicList []string, stopC chan struct{}) {
+		lookupdWrapper := NewNsqlookupdWrapper(t, "127.0.0.1:4161", metaInfo{
+			PartitionNum:  1,
+			Replica:       1,
+			ExtendSupport: true,
+		})
+		go func() {
+			srvMux := http.NewServeMux()
+			srvMux.HandleFunc("/lookup", func(w http.ResponseWriter, r *http.Request) {
+				stubFlagMutex.Lock()
+				stubFlagTemp := stubFlag
+				stubFlagMutex.Unlock()
+				if stubFlagTemp {
+					reqParams, err := url.ParseQuery(r.URL.RawQuery)
+					if err != nil {
+						t.Fatalf("error parse query %v", r.URL.RawQuery)
+					}
+					topic := reqParams.Get("topic")
+					access := reqParams.Get("access")
+					metainfo := reqParams.Get("metainfo")
+
+					val := r.Header.Get("Accept")
+					lookupdUrl := fmt.Sprintf("http://%s/lookup?topic=%s&access=%s&metainfo=%s", "127.0.0.1:4161", topic, access, metainfo)
+					req, err := http.NewRequest("GET", lookupdUrl, nil)
+					req.Header.Add("Accept", val)
+					fmt.Printf("%v\n", val)
+					client := &http.Client{}
+					resp, err := client.Do(req)
+					if err != nil {
+						t.Fatalf("error from upstream lookup %v", err)
+					}
+					var nodes lookupResp
+					json.NewDecoder(resp.Body).Decode(&nodes)
+					defer resp.Body.Close()
+					newPartitions := make(map[string]*peerInfo)
+					for k, v := range nodes.Partitions {
+						if strings.Contains(topic, "t0") {
+							v.BroadcastAddress = "127.0.0.2"
+						} else if strings.Contains(topic, "t1"){
+							continue
+						} else if strings.Contains(topic, "t2"){
+							continue
+						}
+						newPartitions[k] = v
+					}
+					nodes.Partitions = newPartitions
+					nodes.Producers = []*peerInfo{}
+					jsonBytes, err := json.Marshal(&nodes)
+					if err != nil {
+						t.Fatalf("error parse lookup resp")
+					}
+					w.Header().Add("X-Nsq-Content-Type", "nsq; version=1.0")
+					t.Logf("resp: %s", jsonBytes)
+					w.Write(jsonBytes)
+				} else {
+					lookupdWrapper.lookupdWrap(w,r)
+				}
+			})
+			srvMux.HandleFunc("/listlookup", lookupdWrapper.fakeListLookupdWrapSupplier("{\"status_code\":200,\"status_txt\":\"OK\",\"data\":{\"lookupdleader\":{\"ID\":\"127.0.0.1:4260:4160:nsqlookup\",\"NodeIP\":\"127.0.0.1\",\"TcpPort\":\"4160\",\"HttpPort\":\"4165\",\"RpcPort\":\"4260\",\"Epoch\":0},\"lookupdnodes\":[{\"ID\":\"127.0.0.1:4260:4160:nsqlookup\",\"NodeI\":\"127.0.0.1\",\"TcpPort\":\"4160\",\"HttpPort\":\"4165\",\"RpcPort\":\"4260\",\"Epoch\":0}]}}"))
+			l, err := net.Listen("tcp", addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() {
+				select {
+				case <-stopC:
+					l.Close()
+				}
+			}()
+			http.Serve(l, srvMux)
+		}()
+		<-time.After(time.Second)
+	}
+	ensureFakedLookup(t, "127.0.0.1:4165", meta, topicList, stopC)
+
+	defer w.Stop()
+	var testData [][]byte
+	for i := 0; i < msgCount; i++ {
+		testData = append(testData, []byte("lookupd_test_case" + strconv.Itoa(i)))
+		//testData = append(testData, []byte("multipublish_test_case"))
+	}
+	sendMsgAndCheckResult(w, topicList, testData, msgCount, t)
+	time.Sleep(time.Second * 2)
+	stubFlagMutex.Lock()
+	stubFlag = false
+	stubFlagMutex.Unlock()
+	w.queryLookupd("")
+	stubFlagMutex.Lock()
+	stubFlag = true
+	stubFlagMutex.Unlock()
+	w.queryLookupd("")
+	if len(w.removingProducers) != 0{
+		for _, v := range w.removingProducers{
+			v.ts = time.Now().Add(time.Minute * (-10))
+		}
+
+	} else {
+		t.Fatalf("producer should be removed but actually not")
+	}
+	/*
+	 * ensure that producer has been removed
+	 */
+	w.queryLookupd("")
+	stubFlag = false
+	sendMsgAndCheckResult(w, topicList, testData, msgCount, t)
+}
+
+func sendMsgAndCheckResult (w *TopicProducerMgr, topicList []string, testData [][]byte, msgCount int, t *testing.T){
+	var wg sync.WaitGroup
+	for _, tn := range topicList {
+		wg.Add(1)
+		go func(tname string) {
+			defer wg.Done()
+			err := w.MultiPublish(tname, testData)
+			if err != nil {
+				t.Fatal("error pub :", err)
+			}
+
+			go func() {
+				time.Sleep(time.Second)
+				err = w.Publish(tname, []byte("bad_test_case"))
+				if err != nil {
+					t.Errorf("error pub %s", err)
+				}
+			}()
+			readMessages(tname, t, msgCount, true)
+		}(tn)
+	}
+	wg.Wait()
+}
 func readMessages(topicName string, t *testing.T, msgCount int, useLookup bool) {
 	readMessages2(topicName, t, msgCount, useLookup, false)
 }
-
 func readMessages2(topicName string, t *testing.T, msgCount int, useLookup bool, cntGreater bool) {
 	config := NewConfig()
 	config.DefaultRequeueDelay = 0
@@ -1314,6 +1490,7 @@ func readMessages2(topicName string, t *testing.T, msgCount int, useLookup bool,
 	h := &ConsumerHandler{
 		t: t,
 		q: q,
+		checkResult: make(map[string]bool),
 	}
 	q.AddHandler(h)
 
