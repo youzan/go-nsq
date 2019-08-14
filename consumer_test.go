@@ -50,6 +50,10 @@ func (self *NsqdlookupdWrapper) fakeListLookupdWrap(w http.ResponseWriter, r *ht
 	w.Write([]byte("{}"))
 }
 
+func (self *NsqdlookupdWrapper) fakeListLookupdWrapSupplier(response string) func(http.ResponseWriter, *http.Request) {
+	return func (w http.ResponseWriter, r *http.Request) {w.Write([]byte(response))}
+}
+
 func (self *NsqdlookupdWrapper) fakeLookupdWrap(w http.ResponseWriter, r *http.Request) {
 	reqParams, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
