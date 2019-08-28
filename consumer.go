@@ -1086,7 +1086,7 @@ func (r *Consumer) resume() {
 	conns := r.conns()
 	if len(conns) == 0 {
 		r.log(LogLevelWarning, "no connection available to resume")
-		r.log(LogLevelWarning, "backing off for %.04f seconds", 1)
+		r.log(LogLevelWarning, "backing off for %v seconds", 1)
 		r.backoff(time.Second)
 		return
 	}
@@ -1103,7 +1103,7 @@ func (r *Consumer) resume() {
 	err := r.updateRDY(choice, 1)
 	if err != nil {
 		r.log(LogLevelWarning, "(%s) error resuming RDY 1 - %s", choice.String(), err)
-		r.log(LogLevelWarning, "backing off for %.04f seconds", 1)
+		r.log(LogLevelWarning, "backing off for %v seconds", 1)
 		r.backoff(time.Second)
 		return
 	}

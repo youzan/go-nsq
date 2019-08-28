@@ -48,12 +48,12 @@ func (h *ConsumerHandler) HandleMessage(message *Message) error {
 	if msg == "bad_test_case" {
 		return errors.New("fail this message")
 	}
-	if msg != "multipublish_test_case" && msg != "publish_test_case" && !strings.Contains(msg, "lookupd_test_case"){
+	if msg != "multipublish_test_case" && msg != "publish_test_case" && !strings.Contains(msg, "lookupd_test_case") {
 		h.t.Error("message 'action' was not correct:", msg)
 	}
 	if strings.Contains(msg, "lookupd_test_case") {
 		result, ok := h.checkResult[msg]
-		if ok && result == true{
+		if ok && result == true {
 			h.t.Error("message 'action' was duplicated:", msg)
 		}
 		h.checkResult[msg] = true
@@ -1279,34 +1279,34 @@ func TestRemoveUnusedProducerAsync(t *testing.T) {
 	partProducerInfo := NewTopicPartProducerInfo(metaInfo{}, false)
 
 	allTopicParts := make([]AddrPartInfo, 0)
-	addrPartInfo := AddrPartInfo{"127.0.0.3",0}
-	addrPartInfo1 := AddrPartInfo{"127.0.0.4",1}
+	addrPartInfo := AddrPartInfo{"127.0.0.3", 0}
+	addrPartInfo1 := AddrPartInfo{"127.0.0.4", 1}
 	allTopicParts = append(allTopicParts, addrPartInfo)
 	partProducerInfo.allPartitions = append(partProducerInfo.allPartitions, addrPartInfo)
 	partProducerInfo.allPartitions = append(partProducerInfo.allPartitions, addrPartInfo1)
 	w.topics[topicName] = partProducerInfo
 	w.removeUnusedProducerAsync(allTopicParts)
-	if (len(w.removingProducers) != 1){
+	if len(w.removingProducers) != 1 {
 		t.Fatalf("TestRemoveUnusedProducerAsync removing producers num after remove expected:%d actual:%d",
 			1, len(w.removingProducers))
 	}
-	if (w.removingProducers["127.0.0.4"] == nil){
+	if w.removingProducers["127.0.0.4"] == nil {
 		t.Fatalf("TestRemoveUnusedProducerAsync remove wrong producers expected:%s",
 			"127.0.0.4")
 	}
-	if (len(w.producers) != 1){
+	if len(w.producers) != 1 {
 		t.Fatalf("TestRemoveUnusedProducerAsync existing producers num after remove expected:%d actual:%d",
 			1, len(w.producers))
 	}
-	if (w.producers["127.0.0.3"] == nil){
+	if w.producers["127.0.0.3"] == nil {
 		t.Fatalf("TestRemoveUnusedProducerAsync remove wrong producers expected existing producer is :%s, but not exist",
 			"127.0.0.3")
 	}
 	w.removingProducers["127.0.0.4"].ts = time.Now().Add(time.Minute * (-10))
 	w.removeUnusedProducerAsync(allTopicParts)
 
-	for _, p := range w.topics[topicName].allPartitions{
-		if (p.addr == "127.0.0.4") {
+	for _, p := range w.topics[topicName].allPartitions {
+		if p.addr == "127.0.0.4" {
 			t.Fatalf("TestRemoveUnusedProducerAsync topic partitions should be removed addr: %s but still exist",
 				"127.0.0.4")
 		}
@@ -1346,7 +1346,7 @@ func TestQueryLookupd(t *testing.T) {
 	meta.PartitionNum = 1
 	meta.Replica = 1
 	stopC := make(chan struct{})
-	var ensureFakedLookup = func (t *testing.T, addr string, meta metaInfo, topicList []string, stopC chan struct{}) {
+	var ensureFakedLookup = func(t *testing.T, addr string, meta metaInfo, topicList []string, stopC chan struct{}) {
 		lookupdWrapper := NewNsqlookupdWrapper(t, "127.0.0.1:4161", metaInfo{
 			PartitionNum:  1,
 			Replica:       1,
@@ -1384,9 +1384,9 @@ func TestQueryLookupd(t *testing.T) {
 					for k, v := range nodes.Partitions {
 						if strings.Contains(topic, "t0") {
 							v.BroadcastAddress = "127.0.0.2"
-						} else if strings.Contains(topic, "t1"){
+						} else if strings.Contains(topic, "t1") {
 							continue
-						} else if strings.Contains(topic, "t2"){
+						} else if strings.Contains(topic, "t2") {
 							continue
 						}
 						newPartitions[k] = v
@@ -1401,7 +1401,7 @@ func TestQueryLookupd(t *testing.T) {
 					t.Logf("resp: %s", jsonBytes)
 					w.Write(jsonBytes)
 				} else {
-					lookupdWrapper.lookupdWrap(w,r)
+					lookupdWrapper.lookupdWrap(w, r)
 				}
 			})
 			srvMux.HandleFunc("/listlookup", lookupdWrapper.fakeListLookupdWrapSupplier("{\"status_code\":200,\"status_txt\":\"OK\",\"data\":{\"lookupdleader\":{\"ID\":\"127.0.0.1:4260:4160:nsqlookup\",\"NodeIP\":\"127.0.0.1\",\"TcpPort\":\"4160\",\"HttpPort\":\"4165\",\"RpcPort\":\"4260\",\"Epoch\":0},\"lookupdnodes\":[{\"ID\":\"127.0.0.1:4260:4160:nsqlookup\",\"NodeI\":\"127.0.0.1\",\"TcpPort\":\"4160\",\"HttpPort\":\"4165\",\"RpcPort\":\"4260\",\"Epoch\":0}]}}"))
@@ -1420,11 +1420,15 @@ func TestQueryLookupd(t *testing.T) {
 		<-time.After(time.Second)
 	}
 	ensureFakedLookup(t, "127.0.0.1:4165", meta, topicList, stopC)
+	defer func() {
+		close(stopC)
+		time.Sleep(time.Second)
+	}()
 
 	defer w.Stop()
 	var testData [][]byte
 	for i := 0; i < msgCount; i++ {
-		testData = append(testData, []byte("lookupd_test_case" + strconv.Itoa(i)))
+		testData = append(testData, []byte("lookupd_test_case"+strconv.Itoa(i)))
 		//testData = append(testData, []byte("multipublish_test_case"))
 	}
 	sendMsgAndCheckResult(w, topicList, testData, msgCount, t)
@@ -1437,8 +1441,8 @@ func TestQueryLookupd(t *testing.T) {
 	stubFlag = true
 	stubFlagMutex.Unlock()
 	w.queryLookupd("")
-	if len(w.removingProducers) != 0{
-		for _, v := range w.removingProducers{
+	if len(w.removingProducers) != 0 {
+		for _, v := range w.removingProducers {
 			v.ts = time.Now().Add(time.Minute * (-10))
 		}
 
@@ -1453,7 +1457,7 @@ func TestQueryLookupd(t *testing.T) {
 	sendMsgAndCheckResult(w, topicList, testData, msgCount, t)
 }
 
-func sendMsgAndCheckResult (w *TopicProducerMgr, topicList []string, testData [][]byte, msgCount int, t *testing.T){
+func sendMsgAndCheckResult(w *TopicProducerMgr, topicList []string, testData [][]byte, msgCount int, t *testing.T) {
 	var wg sync.WaitGroup
 	for _, tn := range topicList {
 		wg.Add(1)
@@ -1488,8 +1492,8 @@ func readMessages2(topicName string, t *testing.T, msgCount int, useLookup bool,
 	q.SetLogger(nullLogger, LogLevelInfo)
 
 	h := &ConsumerHandler{
-		t: t,
-		q: q,
+		t:           t,
+		q:           q,
 		checkResult: make(map[string]bool),
 	}
 	q.AddHandler(h)

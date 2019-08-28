@@ -825,6 +825,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 
 	allTopicParts := make([]AddrPartInfo, 0)
 
+	hasErr := false
 	for topicName, topicUrl := range topicQueryList {
 		if newTopic != "" {
 			if topicName != newTopic {
@@ -849,6 +850,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		if err != nil {
 			// TODO: handle removing the failed nsqlookup and try get the new list.
 			self.log(LogLevelError, "error querying nsqlookupd (%s) - %s", topicUrl, err)
+			hasErr = true
 			continue
 		}
 
@@ -858,7 +860,6 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 			data.Meta.PartitionNum = len(data.Partitions)
 		}
 		newProducerInfo := NewTopicPartProducerInfo(data.Meta, isMetaValid)
-		changed := false
 		for partStr, producer := range data.Partitions {
 			partID, err := strconv.Atoi(partStr)
 			if err != nil {
@@ -877,7 +878,6 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 			oldAddr := partProducerInfo.getPartitionInfo(uint32(partID))
 			if oldAddr.addr != addr {
 				self.log(LogLevelInfo, "topic %v partition [%v] producer changed from [%v] to [%v]", topicName, partID, oldAddr, addr)
-				changed = true
 			}
 		}
 		// the old lookup did not return the partition info.
@@ -896,7 +896,6 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 				oldAddr := partProducerInfo.getPartitionInfo(uint32(index))
 				if oldAddr.addr != addr {
 					self.log(LogLevelInfo, "topic %v partition at index [%v] producer changed from [%v] to [%v]", topicName, index, oldAddr, addr)
-					changed = true
 				}
 			}
 		}
@@ -905,14 +904,20 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		if len(newProducerInfo.allPartitions) > 0 {
 			allTopicParts = append(allTopicParts, newProducerInfo.allPartitions...)
 		}
-		if changed {
-			for partID, addrInfo := range newProducerInfo.allPartitions {
-				addr := addrInfo.addr
-				_, ok := self.producers[addr]
-				if !ok {
-					if addr == "" {
-						continue
-					}
+		for partID, addrInfo := range newProducerInfo.allPartitions {
+			// we need check any producer missing even no any part address changed, because we may
+			// removing some failed producer and re-added it after a while
+			addr := addrInfo.addr
+			_, ok := self.producers[addr]
+			if !ok {
+				if addr == "" {
+					continue
+				}
+				rm, _ := self.removingProducers[addr]
+				if rm != nil {
+					self.log(LogLevelInfo, "new producer %v for topic %v-%v re-added from removing %v", addr, topicName, partID, rm)
+					self.producers[addr] = rm.producer
+				} else {
 					self.log(LogLevelInfo, "init new producer %v for topic %v-%v", addr, topicName, partID)
 					newProd, err := newProducerPool(addr, &self.config)
 					if err != nil {
@@ -922,8 +927,8 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 						self.producers[addr] = newProd
 					}
 				}
-				delete(self.removingProducers, addr)
 			}
+			delete(self.removingProducers, addr)
 		}
 		self.producerMtx.Unlock()
 
@@ -932,7 +937,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		self.topicMtx.Unlock()
 	}
 	//leave removing expired producer to timer
-	if newTopic != "" {
+	if newTopic != "" || hasErr {
 		return
 	}
 
@@ -1039,7 +1044,7 @@ func (self *TopicProducerMgr) removeProducerForTopic(topic string, pid int, addr
 	self.topicMtx.Unlock()
 }
 
-func (self *TopicProducerMgr) removePartitionsOnProducer(addr string){
+func (self *TopicProducerMgr) removePartitionsOnProducer(addr string) {
 	self.topicMtx.Lock()
 	for topic, v := range self.topics {
 		newInfo := NewTopicPartProducerInfo(v.meta, v.isMetaValid)
@@ -1935,5 +1940,3 @@ func (self *TopicProducerMgr) getLogger() (logger, LogLevel) {
 	self.logGuard.RUnlock()
 	return lg, lv
 }
-
-
