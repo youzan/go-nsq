@@ -226,6 +226,8 @@ func TestConsumerBackoff(t *testing.T) {
 		instruction{0, FrameTypeResponse, []byte("OK")},
 		// IDENTIFY
 		instruction{0, FrameTypeResponse, []byte("OK")},
+		// SUB
+		instruction{0, FrameTypeResponse, []byte("OK")},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgGood)},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgGood)},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgGood)},
@@ -265,7 +267,6 @@ func TestConsumerBackoff(t *testing.T) {
 		fmt.Sprintf("FIN %s", msgIDGood),
 		fmt.Sprintf("FIN %s", msgIDGood),
 		fmt.Sprintf("FIN %s", msgIDGood),
-		"RDY 5",
 		"RDY 0",
 		fmt.Sprintf("REQ %s 0", msgIDBad),
 		"RDY 1",
@@ -301,6 +302,8 @@ func TestConsumerRequeueNoBackoff(t *testing.T) {
 		// SUB
 		instruction{0, FrameTypeResponse, []byte("OK")},
 		// IDENTIFY
+		instruction{0, FrameTypeResponse, []byte("OK")},
+		// SUB
 		instruction{0, FrameTypeResponse, []byte("OK")},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgRequeue)},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgRequeueNoBackoff)},
@@ -339,7 +342,6 @@ func TestConsumerRequeueNoBackoff(t *testing.T) {
 		"IDENTIFY",
 		"SUB " + topicName + " ch 0",
 		"RDY 1",
-		"RDY 1",
 		"RDY 0",
 		fmt.Sprintf("REQ %s 0", msgIDRequeue),
 		"RDY 1",
@@ -370,6 +372,8 @@ func TestConsumerBackoffDisconnect(t *testing.T) {
 		// SUB
 		instruction{0, FrameTypeResponse, []byte("OK")},
 		// IDENTIFY
+		instruction{0, FrameTypeResponse, []byte("OK")},
+		// SUB
 		instruction{0, FrameTypeResponse, []byte("OK")},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgGood)},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgRequeue)},
@@ -439,6 +443,8 @@ func TestConsumerBackoffDisconnect(t *testing.T) {
 		instruction{0, FrameTypeResponse, []byte("OK")},
 		// IDENTIFY
 		instruction{0, FrameTypeResponse, []byte("OK")},
+		// SUB
+		instruction{0, FrameTypeResponse, []byte("OK")},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgGood)},
 		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgGood)},
 		// needed to exit test
@@ -466,6 +472,76 @@ func TestConsumerBackoffDisconnect(t *testing.T) {
 		"RDY 5",
 		fmt.Sprintf("FIN %s", msgIDGood),
 		fmt.Sprintf("FIN %s", msgIDGood),
+	}
+	if len(n.got) != len(expected) {
+		t.Fatalf("we got %d commands != %d expected", len(n.got), len(expected))
+	}
+	for i, r := range n.got {
+		if string(r) != expected[i] {
+			t.Fatalf("cmd %d bad %s != %s", i, r, expected[i])
+		}
+	}
+}
+
+func TestConsumerPause(t *testing.T) {
+	msgIDGood := MessageID{'1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'a', 's', 'd', 'f', 'g', 'h'}
+
+	msgGood := NewMessage(msgIDGood, []byte("good"))
+
+	script := []instruction{
+		// IDENTIFY
+		instruction{0, FrameTypeResponse, []byte("OK")},
+		// SUB
+		instruction{0, FrameTypeResponse, []byte("OK")},
+		instruction{20 * time.Millisecond, FrameTypeMessage, frameMessage(msgGood)},
+		// needed to exit test
+		instruction{200 * time.Millisecond, -1, []byte("exit")},
+	}
+
+	addr, _ := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
+	n := newMockNSQD(t, script, addr.String())
+
+	topicName := "test_pause" + strconv.Itoa(int(time.Now().Unix()))
+	config := NewConfig()
+	config.MaxInFlight = 5
+	q, _ := NewConsumer(topicName, "ch", config)
+	q.SetLogger(newTestLogger(t), LogLevelDebug)
+	q.AddHandler(&testHandler{})
+	err := q.ConnectToNSQD(n.tcpAddr.String(), 0)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+
+	timeoutCh := time.After(500 * time.Millisecond)
+	pauseCh := time.After(50 * time.Millisecond)
+	unpauseCh := time.After(75 * time.Millisecond)
+	for {
+		select {
+		case <-n.exitChan:
+			t.Log("clean exit")
+			goto done
+		case <-timeoutCh:
+			t.Log("timeout")
+			goto done
+		case <-pauseCh:
+			q.ChangeMaxInFlight(0)
+		case <-unpauseCh:
+			q.ChangeMaxInFlight(config.MaxInFlight)
+		}
+	}
+done:
+
+	for i, r := range n.got {
+		t.Logf("%d: %s", i, r)
+	}
+
+	expected := []string{
+		"IDENTIFY",
+		"SUB " + topicName + " ch 0",
+		"RDY 5",
+		fmt.Sprintf("FIN %s", msgIDGood),
+		"RDY 0",
+		"RDY 5",
 	}
 	if len(n.got) != len(expected) {
 		t.Fatalf("we got %d commands != %d expected", len(n.got), len(expected))

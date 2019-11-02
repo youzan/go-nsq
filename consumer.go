@@ -121,11 +121,11 @@ type Consumer struct {
 
 	needRDYRedistributed int32
 
-	backoffMtx sync.RWMutex
+	backoffMtx sync.Mutex
 
 	incomingMessages chan *Message
 
-	rdyRetryMtx    sync.RWMutex
+	rdyRetryMtx    sync.Mutex
 	rdyRetryTimers map[string]*time.Timer
 
 	pendingConnections map[string]*Conn
@@ -305,7 +305,7 @@ func (r *Consumer) perConnMaxInFlight() int64 {
 // before being able to receive more messages (ie. RDY count of 0 and not exiting)
 func (r *Consumer) IsStarved() bool {
 	for _, conn := range r.conns() {
-		threshold := int64(float64(atomic.LoadInt64(&conn.lastRdyCount)) * 0.85)
+		threshold := int64(float64(conn.RDY()) * 0.85)
 		inFlight := atomic.LoadInt64(&conn.messagesInFlight)
 		if inFlight >= threshold && inFlight > 0 && !conn.IsClosing() {
 			return true
@@ -856,7 +856,6 @@ func (r *Consumer) DisconnectFromNSQLookupd(addr string) error {
 }
 
 func (r *Consumer) onConnMessage(c *Conn, msg *Message) {
-	atomic.AddInt64(&r.totalRdyCount, -1)
 	atomic.AddUint64(&r.messagesReceived, 1)
 	if r.config.EnableOrdered || r.config.EnableTrace {
 		if len(msg.Body) < 12 {
@@ -868,7 +867,6 @@ func (r *Consumer) onConnMessage(c *Conn, msg *Message) {
 		msg.Body = msg.Body[8+4:]
 	}
 	r.incomingMessages <- msg
-	r.maybeUpdateRDY(c)
 }
 
 func (r *Consumer) onConnMessageFinished(c *Conn, msg *Message) {
@@ -1017,11 +1015,10 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal) {
 	// max backoff/normal rate (by ensuring that we dont continually incr/decr
 	// the counter during a backoff period)
 	r.backoffMtx.Lock()
+	defer r.backoffMtx.Unlock()
 	if r.inBackoffTimeout() {
-		r.backoffMtx.Unlock()
 		return
 	}
-	defer r.backoffMtx.Unlock()
 
 	// update backoff state
 	backoffUpdated := false
@@ -1056,8 +1053,8 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal) {
 			backoffDuration = r.config.MaxBackoffDuration
 		}
 
-		r.log(LogLevelInfo, "backing off for %.04f seconds (backoff level %d), setting all to RDY 0",
-			backoffDuration.Seconds(), backoffCounter)
+		r.log(LogLevelInfo, "backing off for %s (backoff level %d), setting all to RDY 0",
+			backoffDuration, backoffCounter)
 
 		// send RDY 0 immediately (to *all* connections)
 		for _, c := range r.conns() {
@@ -1103,7 +1100,7 @@ func (r *Consumer) resume() {
 	err := r.updateRDY(choice, 1)
 	if err != nil {
 		r.log(LogLevelWarning, "(%s) error resuming RDY 1 - %s", choice.String(), err)
-		r.log(LogLevelWarning, "backing off for %v seconds", 1)
+		r.log(LogLevelWarning, "backing off for %s", time.Second)
 		r.backoff(time.Second)
 		return
 	}
@@ -1132,19 +1129,9 @@ func (r *Consumer) maybeUpdateRDY(conn *Conn) {
 		return
 	}
 
-	remain := conn.RDY()
-	lastRdyCount := conn.LastRDY()
 	count := r.perConnMaxInFlight()
-
-	// refill when at 1, or at 25%, or if connections have changed and we're imbalanced
-	if remain <= 1 || remain < (lastRdyCount/4) || (count > 0 && count < remain) {
-		r.log(LogLevelDebug, "(%s) sending RDY %d (%d remain from last RDY %d)",
-			conn, count, remain, lastRdyCount)
-		r.updateRDY(conn, count)
-	} else {
-		r.log(LogLevelDebug, "(%s) skip sending RDY %d (%d remain out of last RDY %d)",
-			conn, count, remain, lastRdyCount)
-	}
+	r.log(LogLevelDebug, "(%s) sending RDY %d ", conn, count)
+	r.updateRDY(conn, count)
 }
 
 func (r *Consumer) rdyLoop() {
@@ -1245,7 +1232,7 @@ func (r *Consumer) sendRDY(c *Conn, count int64) error {
 		return nil
 	}
 
-	atomic.AddInt64(&r.totalRdyCount, -c.RDY()+count)
+	atomic.AddInt64(&r.totalRdyCount, count-c.RDY())
 	c.SetRDY(count)
 	err := c.WriteCommand(Ready(int(count)))
 	if err != nil {
@@ -1286,12 +1273,18 @@ func (r *Consumer) redistributeRDY() {
 	possibleConns := make([]*Conn, 0, len(conns))
 	for _, c := range conns {
 		lastMsgDuration := time.Now().Sub(c.LastMessageTime())
+		lastRdyDuration := time.Now().Sub(c.LastRdyTime())
 		rdyCount := c.RDY()
-		r.log(LogLevelDebug, "(%s) rdy: %d (last message received %s)",
-			c.String(), rdyCount, lastMsgDuration)
-		if rdyCount > 0 && lastMsgDuration > r.config.LowRdyIdleTimeout {
-			r.log(LogLevelDebug, "(%s) idle connection, giving up RDY", c.String())
-			r.updateRDY(c, 0)
+		r.log(LogLevelDebug, "(%s) rdy: %d (last message received %s, last non-zero ready %s)",
+			c.String(), rdyCount, lastMsgDuration, lastRdyDuration)
+		if rdyCount > 0 {
+			if lastMsgDuration > r.config.LowRdyIdleTimeout {
+				r.log(LogLevelInfo, "(%s) idle connection, giving up RDY", c.String())
+				r.updateRDY(c, 0)
+			} else if lastRdyDuration > r.config.LowRdyTimeout {
+				r.log(LogLevelInfo, "(%s) RDY timeout, giving up RDY, %s", c.String(), lastRdyDuration)
+				r.updateRDY(c, 0)
+			}
 		}
 		possibleConns = append(possibleConns, c)
 	}
