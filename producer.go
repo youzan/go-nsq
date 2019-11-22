@@ -835,6 +835,10 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		self.log(LogLevelDebug, "querying nsqlookupd for topic %s", topicUrl)
 		self.topicMtx.Lock()
 		partProducerInfo, ok := self.topics[topicName]
+		oldIndex := uint32(0)
+		if ok {
+			oldIndex = atomic.LoadUint32(&partProducerInfo.currentIndex)
+		}
 		if newTopic != "" {
 			partProducerInfo = NewTopicPartProducerInfo(metaInfo{}, false)
 			self.topics[topicName] = partProducerInfo
@@ -860,6 +864,8 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 			data.Meta.PartitionNum = len(data.Partitions)
 		}
 		newProducerInfo := NewTopicPartProducerInfo(data.Meta, isMetaValid)
+		// reuse old index to make sure rr strategy is keep on new nodes
+		newProducerInfo.currentIndex = oldIndex
 		for partStr, producer := range data.Partitions {
 			partID, err := strconv.Atoi(partStr)
 			if err != nil {
