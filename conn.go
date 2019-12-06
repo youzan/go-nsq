@@ -548,6 +548,7 @@ func (c *Conn) readLoop() {
 			msg.Delegate = delegate
 			msg.NSQDAddress = c.String()
 			msg.Partition = c.consumePart
+
 			atomic.AddInt64(&c.messagesInFlight, 1)
 			atomic.StoreInt64(&c.lastMsgTimestamp, time.Now().UnixNano())
 

@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"sync/atomic"
 	"time"
-	"strconv"
 )
 
 // The number of bytes for a Message.ID
@@ -47,8 +47,8 @@ type Message struct {
 	Attempts  uint16
 
 	NSQDAddress string
-	Partition string
-	Delegate MessageDelegate
+	Partition   string
+	Delegate    MessageDelegate
 
 	autoResponseDisabled int32
 	responded            int32
@@ -253,6 +253,37 @@ func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
 			pos += int(extLen)
 		}
 	}
-	msg.Body = b[pos:]
+	if ext {
+		json, err := msg.GetJsonExt()
+		if err != nil {
+			return nil, err
+		}
+		msg.Body, err = tryDecompress(b[pos:], json)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		msg.Body = b[pos:]
+	}
 	return &msg, nil
+}
+
+func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, error) {
+	if ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY] != "" {
+		codecNo, err := strconv.Atoi(ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY])
+		if err != nil {
+			return nil, err
+		}
+		codec, err := GetNSQClientCompressCodeByCodecNo(codecNo)
+		if err != nil {
+			return nil, err
+		}
+		decompressed, err := codec.Decompress(bodyMayCompressed)
+		if err != nil {
+			return nil, err
+		}
+		return decompressed, err
+	} else {
+		return bodyMayCompressed, nil
+	}
 }

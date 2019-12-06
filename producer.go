@@ -626,6 +626,9 @@ type TopicProducerMgr struct {
 	newTopicChan       chan string
 	newTopicRspChan    chan int
 	backgroundBuffer   chan *backgroundCommand
+
+	topicForCompress map[string]bool
+	codec            NSQClientCompressCodec
 }
 
 // use part=-1 to handle all partitions of topic
@@ -646,11 +649,23 @@ func NewTopicProducerMgr(topics []string, conf *Config) (*TopicProducerMgr, erro
 		exitChan:           make(chan int),
 		newTopicChan:       make(chan string),
 		newTopicRspChan:    make(chan int),
+		topicForCompress:   make(map[string]bool),
 	}
+
 	mgr.backgroundBuffer = make(chan *backgroundCommand, conf.PubBackgroundBuffer)
 	for _, t := range topics {
 		mgr.topics[t] = NewTopicPartProducerInfo(metaInfo{}, false)
 	}
+
+	mgr.codec, err = GetNSQClientCompressCodec(conf.ClientCompressDecodec)
+	if err != nil {
+		return nil, err
+	}
+	//init topc for compress map
+	for _, t := range conf.TopicsForCompress {
+		mgr.topicForCompress[t] = true
+	}
+
 	mgr.wg.Add(1)
 	go mgr.handleBackgroundRetry()
 	return mgr, nil
@@ -1232,7 +1247,8 @@ func (self *TopicProducerMgr) PublishAsyncWithJsonExt(topic string, body []byte,
 		if pid < 0 {
 			return nil, errors.New("pub need partition id")
 		}
-		return PublishWithJsonExt(topic, strconv.Itoa(pid), body, ext.ToJson())
+		afterCompressed := self.compress(topic, body, ext)
+		return PublishWithJsonExt(topic, strconv.Itoa(pid), afterCompressed, ext.ToJson())
 	}, args)
 }
 
@@ -1368,7 +1384,8 @@ func (self *TopicProducerMgr) PublishWithExtAndRetryBackground(topic string, bod
 		if pid < 0 {
 			return nil, errors.New("pub with tag need partition id")
 		}
-		return PublishWithJsonExt(topic, strconv.Itoa(pid), body, ext.ToJson())
+		afterCompressed := self.compress(topic, body, ext)
+		return PublishWithJsonExt(topic, strconv.Itoa(pid), afterCompressed, ext.ToJson())
 	}, body)
 	if err != nil {
 		return err
@@ -1390,13 +1407,35 @@ func (self *TopicProducerMgr) Publish(topic string, body []byte) error {
 	return err
 }
 
+func (self *TopicProducerMgr) compressApply(topic string, bodySize int) bool {
+	return self.topicForCompress[topic] && self.config.MessageSizeForCompress <= bodySize
+}
+
+func (self *TopicProducerMgr) compress(topic string, toCompress []byte, ext *MsgExt) []byte {
+	var compressed []byte
+	var err error
+	if self.compressApply(topic, len(toCompress)) {
+		//1. compress
+		compressed, err = self.codec.Compress(toCompress)
+		if err == nil {
+			//2. update ext with compress codec
+			ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY] = strconv.Itoa(self.codec.GetCodecNo())
+		}
+	}
+	if nil == compressed {
+		compressed = toCompress
+	}
+	return compressed
+}
+
 func (self *TopicProducerMgr) PublishWithJsonExtAndPartitionId(topic string, partition int, body []byte, ext *MsgExt) (NewMessageID,
 	uint64, uint32, error) {
 	resp, err := self.doCommandWithTimeoutAndRetryAndPartition(topic, partition, 0, 3, func(pid int) (*Command, error) {
 		if pid < 0 || pid == OLD_VERSION_PID {
 			return nil, errors.New(fmt.Sprintf("invalid partition: %v", partition))
 		}
-		cmd, err := PublishWithJsonExt(topic, strconv.Itoa(pid), body, ext.ToJson())
+		afterCompressed := self.compress(topic, body, ext)
+		cmd, err := PublishWithJsonExt(topic, strconv.Itoa(pid), afterCompressed, ext.ToJson())
 		if err != nil {
 			return nil, err
 		}
@@ -1471,7 +1510,8 @@ func (self *TopicProducerMgr) PublishOrderedWithJsonExt(topic string, partitionK
 		if pid < 0 {
 			return nil, errors.New("ordered pub need partition id")
 		}
-		return PublishWithJsonExt(topic, strconv.Itoa(pid), body, ext.ToJson())
+		afterCompressed := self.compress(topic, body, ext)
+		return PublishWithJsonExt(topic, strconv.Itoa(pid), afterCompressed, ext.ToJson())
 	})
 	if err != nil {
 		return 0, 0, 0, err
@@ -1582,8 +1622,8 @@ func (self *TopicProducerMgr) PublishWithJsonExt(topic string, body []byte, ext 
 		if pid < 0 {
 			return nil, errors.New("pub with tag need partition id")
 		}
-
-		return PublishWithJsonExt(topic, strconv.Itoa(pid), body, ext.ToJson())
+		afterCompressed := self.compress(topic, body, ext)
+		return PublishWithJsonExt(topic, strconv.Itoa(pid), afterCompressed, ext.ToJson())
 	})
 	if err != nil {
 		return 0, 0, 0, err
