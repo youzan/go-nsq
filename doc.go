@@ -52,5 +52,20 @@ Producing messages can be done by creating an instance of a Producer.
 	}
 	// Gracefully stop the producer.
 	producer.Stop()
+
+Client message compress
+Producer is able to compress message before publishing to extend topic, powered by youzan nsq.
+message compress codec added in message header, and consumer client which supports message decompressing
+decompress message according to that codec.
+Basicaly, there is no extra configuration for consumer to support message decompress, but make sure ALL
+consumer in topic channels need to support client message decompress BEFORE producer enabe topic compress.
+As to producer, with following code in config to enable message compress
+	config := nsq.NewConfig()
+	//specifiy message compress codec to lz4, other available codec are: gzip, snappy
+	config.ClientCompressDecodec = "lz4"
+	//specify min message byte size for invoke compressing before sending it
+	config.MessageSizeForCompress = 30 * 1024
+	//specify topics need message compress
+	config.TopicsForCompress = []string{"topic1", "topic2"}
 */
 package nsq
