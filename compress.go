@@ -31,6 +31,8 @@ var CompressDecodec_LZ4 = &NSQClientCompressCodecImpl{
 	3,
 }
 
+const htSize = 1 << 16
+
 type NSQClientCompressCodecImpl struct {
 	CodecName string
 	codecNo   int
@@ -79,11 +81,11 @@ func (c *NSQClientCompressCodecImpl) GetCodecNo() int {
 func (c *NSQClientCompressCodecImpl) Compress(forCompress []byte) ([]byte, error) {
 	switch c.CodecName {
 	case CompressDecodec_SNAPPY.CodecName:
-		return compressSnappy(forCompress)
+		return compressSnappyBlock(forCompress)
 	case CompressDecodec_GZIP.CodecName:
 		return compressGZIP(forCompress)
 	case CompressDecodec_LZ4.CodecName:
-		return compressLZ4(forCompress)
+		return compressLZ4Block(forCompress)
 	default:
 		return forCompress, nil
 	}
@@ -92,11 +94,11 @@ func (c *NSQClientCompressCodecImpl) Compress(forCompress []byte) ([]byte, error
 func (c *NSQClientCompressCodecImpl) Decompress(forDecompress []byte) ([]byte, error) {
 	switch c.CodecName {
 	case CompressDecodec_SNAPPY.CodecName:
-		return decompressSnappy(forDecompress)
+		return decompressSnappyBlock(forDecompress)
 	case CompressDecodec_GZIP.CodecName:
 		return decompressGZIP(forDecompress)
 	case CompressDecodec_LZ4.CodecName:
-		return decompressLZ4(forDecompress)
+		return decompressLZ4Block(forDecompress)
 	default:
 		return forDecompress, nil
 	}
@@ -112,6 +114,15 @@ func decompressLZ4(forDecompress []byte) ([]byte, error) {
 	return r, nil
 }
 
+func decompressLZ4Block(forDecompress []byte) ([]byte, error) {
+	dest := make([]byte, lz4.CompressBlockBound(len(forDecompress)))
+	decompressed, err := lz4.UncompressBlock(forDecompress, dest)
+	if err != nil {
+		return nil, err
+	}
+	return dest[:decompressed], nil
+}
+
 func compressLZ4(forCompress []byte) ([]byte, error) {
 	var b bytes.Buffer
 	w := lz4.NewWriter(&b)
@@ -125,6 +136,18 @@ func compressLZ4(forCompress []byte) ([]byte, error) {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+var ErrNotCompressible = errors.New("bytes is not compressible")
+
+func compressLZ4Block(forCompress []byte) ([]byte, error) {
+	dest := make([]byte, len(forCompress))
+	var hashTab [htSize]int
+	compressed, err := lz4.CompressBlock(forCompress, dest, hashTab[:])
+	if compressed == 0 {
+		return nil, ErrNotCompressible
+	}
+	return dest[:compressed], err
 }
 
 func decompressGZIP(forDecompress []byte) ([]byte, error) {
@@ -160,10 +183,9 @@ func compressGZIP(forCompress []byte) ([]byte, error) {
 
 //snappy decompress
 func decompressSnappy(forDecompress []byte) ([]byte, error) {
-	return snappy.Decode(nil, forDecompress)
-	// b := bytes.NewReader(forDecompress)
-	// r := snappy.NewReader(b)
-	// return ioutil.ReadAll(r)
+	b := bytes.NewReader(forDecompress)
+	r := snappy.NewReader(b)
+	return ioutil.ReadAll(r)
 }
 
 //snappy compress
@@ -178,6 +200,14 @@ func compressSnappy(forCompress []byte) ([]byte, error) {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+func compressSnappyBlock(forCompress []byte) ([]byte, error) {
+	return snappy.Encode(nil, forCompress), nil
+}
+
+func decompressSnappyBlock(forDecompress []byte) ([]byte, error) {
+	return snappy.Decode(nil, forDecompress)
 }
 
 //get NSQ client compress codec according to paasin codec name string
