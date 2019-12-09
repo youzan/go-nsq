@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"io/ioutil"
 
 	"github.com/pierrec/lz4"
@@ -43,6 +44,8 @@ type NSQClientCompressCodec interface {
 
 func GetNSQClientCompressCodec(codecName string) (NSQClientCompressCodec, error) {
 	switch codecName {
+	case CompressDecodec_NOT_SPECIFIED.CodecName:
+		return CompressDecodec_NOT_SPECIFIED, nil
 	case CompressDecodec_GZIP.CodecName:
 		return CompressDecodec_GZIP, nil
 	case CompressDecodec_SNAPPY.CodecName:
@@ -50,7 +53,7 @@ func GetNSQClientCompressCodec(codecName string) (NSQClientCompressCodec, error)
 	case CompressDecodec_LZ4.CodecName:
 		return CompressDecodec_LZ4, nil
 	default:
-		return nil, errors.New("unsupported client compress codec")
+		return nil, errors.New(fmt.Sprintf("unsupported client compress codec: %s", codecName))
 	}
 }
 
