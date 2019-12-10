@@ -12,6 +12,7 @@ import (
 
 // The number of bytes for a Message.ID
 const MsgIDLength = 16
+const COMPRESS_RATIO_WILD_GUESS = 10
 
 type FullMessageID [MsgIDLength]byte
 
@@ -253,7 +254,7 @@ func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
 			pos += int(extLen)
 		}
 	}
-	if ext {
+	if ext && msg.ExtVer == JSONHeaderExtVer {
 		json, err := msg.GetJsonExt()
 		if err != nil {
 			return nil, err
@@ -278,7 +279,17 @@ func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		decompressed, err := codec.Decompress(bodyMayCompressed)
+		var originalMsgSize int
+		if originalMsgSizeStr, ok := ext.Custom[NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY]; ok {
+			originalMsgSize, err = strconv.Atoi(originalMsgSizeStr)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			//try luck with wild guess
+			originalMsgSize = len(bodyMayCompressed) * COMPRESS_RATIO_WILD_GUESS
+		}
+		decompressed, err := codec.Decompress(bodyMayCompressed, originalMsgSize)
 		if err != nil {
 			return nil, err
 		}

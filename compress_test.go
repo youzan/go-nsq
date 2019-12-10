@@ -24,8 +24,9 @@ func TestCompressDecompressLZ4(t *testing.T) {
 func testCompressDecompress(forCompress []byte, codec NSQClientCompressCodec, t *testing.T) {
 	compressed, err := codec.Compress(forCompress)
 	assert.Nil(t, err)
-	decompressed, err := codec.Decompress(compressed)
+	decompressed, err := codec.Decompress(compressed, len(compressed)*10)
 	assert.Nil(t, err)
+	assert.EqualValues(t, len(forCompress), len(decompressed))
 	assert.EqualValues(t, forCompress, decompressed)
 }
 

@@ -6,7 +6,14 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
+
+func TestCondigDefault(t *testing.T) {
+	c := NewConfig()
+	assert.NotEmpty(t, c.ClientCompressDecodec)
+}
 
 func TestConfigSet(t *testing.T) {
 	c := NewConfig()

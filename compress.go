@@ -13,6 +13,7 @@ import (
 )
 
 const NSQ_CLIENT_COMPRESS_HEADER_KEY = "nsq.client.compress"
+const NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY = "nsq.msg.size"
 
 var CompressDecodec_NOT_SPECIFIED = &NSQClientCompressCodecImpl{
 	"not_specified",
@@ -41,7 +42,7 @@ type NSQClientCompressCodecImpl struct {
 type NSQClientCompressCodec interface {
 	GetCodecNo() int
 	Compress(forCompress []byte) ([]byte, error)
-	Decompress(forDecompress []byte) ([]byte, error)
+	Decompress(forDecompress []byte, originalMsgSize int) ([]byte, error)
 }
 
 func GetNSQClientCompressCodec(codecName string) (NSQClientCompressCodec, error) {
@@ -91,14 +92,14 @@ func (c *NSQClientCompressCodecImpl) Compress(forCompress []byte) ([]byte, error
 	}
 }
 
-func (c *NSQClientCompressCodecImpl) Decompress(forDecompress []byte) ([]byte, error) {
+func (c *NSQClientCompressCodecImpl) Decompress(forDecompress []byte, originalMsgSize int) ([]byte, error) {
 	switch c.CodecName {
 	case CompressDecodec_SNAPPY.CodecName:
 		return decompressSnappyBlock(forDecompress)
 	case CompressDecodec_GZIP.CodecName:
 		return decompressGZIP(forDecompress)
 	case CompressDecodec_LZ4.CodecName:
-		return decompressLZ4Block(forDecompress)
+		return decompressLZ4Block(forDecompress, originalMsgSize)
 	default:
 		return forDecompress, nil
 	}
@@ -114,8 +115,8 @@ func decompressLZ4(forDecompress []byte) ([]byte, error) {
 	return r, nil
 }
 
-func decompressLZ4Block(forDecompress []byte) ([]byte, error) {
-	dest := make([]byte, lz4.CompressBlockBound(len(forDecompress)))
+func decompressLZ4Block(forDecompress []byte, originalMsgSize int) ([]byte, error) {
+	dest := make([]byte, originalMsgSize)
 	decompressed, err := lz4.UncompressBlock(forDecompress, dest)
 	if err != nil {
 		return nil, err

@@ -201,9 +201,9 @@ type Config struct {
 	LookupdSeeds []string `opt:"lookupd_seeds"`
 
 	//go-nsq compress config
-	TopicsForCompress      []string `opt:topics_for_compress`
-	MessageSizeForCompress int      `opt:message_size_for_compress default:"20480"`
-	ClientCompressDecodec  string   `opt:client_compress_decodec default:"not_specified"`
+	TopicsForCompress      []string `opt:"topics_for_compress"`
+	MessageSizeForCompress int      `opt:"message_size_for_compress" default:"20480"`
+	ClientCompressDecodec  string   `opt:"client_compress_decodec" default:"not_specified"`
 }
 
 // NewConfig returns a new default nsq configuration.

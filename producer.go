@@ -1414,12 +1414,14 @@ func (self *TopicProducerMgr) compressApply(topic string, bodySize int) bool {
 func (self *TopicProducerMgr) compress(topic string, toCompress []byte, ext *MsgExt) []byte {
 	var compressed []byte
 	var err error
-	if self.compressApply(topic, len(toCompress)) {
+	originalMsgSize := len(toCompress)
+	if self.compressApply(topic, originalMsgSize) {
 		//1. compress
 		compressed, err = self.codec.Compress(toCompress)
 		if err == nil {
-			//2. update ext with compress codec
+			//2. update ext with compress codec & original msg size
 			ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY] = strconv.Itoa(self.codec.GetCodecNo())
+			ext.Custom[NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY] = strconv.Itoa(originalMsgSize)
 		}
 	}
 	if nil == compressed {
