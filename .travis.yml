@@ -8,7 +8,7 @@ install:
   - go get github.com/golang/snappy
   - go get github.com/stretchr/testify
   - go get github.com/spaolacci/murmur3
-  - go getgithub.com/pierrec/lz4
+  - go get github.com/pierrec/lz4
 
 script:
   - wget https://github.com/youzan/nsq/releases/download/$NSQ_RELEASE/$NSQ_DOWNLOAD.tar.gz
