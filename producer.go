@@ -841,6 +841,7 @@ func (self *TopicProducerMgr) queryLookupd(newTopic string) {
 		}
 		if newTopic != "" {
 			partProducerInfo = NewTopicPartProducerInfo(metaInfo{}, false)
+			partProducerInfo.currentIndex = oldIndex
 			self.topics[topicName] = partProducerInfo
 			ok = true
 		}
