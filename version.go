@@ -5,4 +5,4 @@
 package nsq
 
 // VERSION
-const VERSION = "1.5.0 HA"
+const VERSION = "1.6.1 HA"

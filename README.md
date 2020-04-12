@@ -1,6 +1,6 @@
 ## go-nsq
 
-[![Build Status](https://travis-ci.org/youzan/go-nsq.svg?branch=master)][travis] [![GoDoc](https://godoc.org/github.com/youzan/go-nsq?status.svg)](https://godoc.org/github.com/youzan/go-nsq) [![GitHub release](https://img.shields.io/github/release/youzan/go-nsq.svg)](https://github.com/youzan/go-nsq/releases/latest)
+[![Build Status](https://travis-ci.com/youzan/go-nsq.svg?branch=master)][travis] [![GoDoc](https://godoc.org/github.com/youzan/go-nsq?status.svg)](https://godoc.org/github.com/youzan/go-nsq) [![GitHub release](https://img.shields.io/github/release/youzan/go-nsq.svg)](https://github.com/youzan/go-nsq/releases/latest)
 
 The official Go package for [NSQ][nsq].
 

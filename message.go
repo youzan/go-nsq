@@ -93,12 +93,17 @@ func (m *Message) GetJsonExt() (*MsgExt, error) {
 		}
 	}
 	//fetch tag
-	if tag, exist := jext.Custom[dispatchTagExtK]; exist {
-		jext.DispatchTag = tag
+	if tagV, exist := jext.Custom[dispatchTagExtK]; exist {
+		tagStr, _ := tagV.(string)
+		jext.DispatchTag = tagStr
 	}
 	//fetch traceID
-	if traceIDStr, exist := jext.Custom[traceIDExtK]; exist {
+	if traceIDV, exist := jext.Custom[traceIDExtK]; exist {
 		var err error
+		traceIDStr, ok := traceIDV.(string)
+		if !ok {
+			return nil, errors.New("traceID not string")
+		}
 		jext.TraceID, err = strconv.ParseUint(traceIDStr, 10, 64)
 		if err != nil {
 			return nil, err
@@ -270,8 +275,10 @@ func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
 }
 
 func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, error) {
-	if ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY] != "" {
-		codecNo, err := strconv.Atoi(ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY])
+	compressH := ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY]
+	compressHStr, _ := compressH.(string)
+	if compressHStr != "" {
+		codecNo, err := strconv.Atoi(compressHStr)
 		if err != nil {
 			return nil, err
 		}
@@ -279,9 +286,11 @@ func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		compressHSize := ext.Custom[NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY]
+		origSizeStr, ok := compressHSize.(string)
 		var originalMsgSize int
-		if originalMsgSizeStr, ok := ext.Custom[NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY]; ok {
-			originalMsgSize, err = strconv.Atoi(originalMsgSizeStr)
+		if ok {
+			originalMsgSize, err = strconv.Atoi(origSizeStr)
 			if err != nil {
 				return nil, err
 			}

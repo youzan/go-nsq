@@ -969,7 +969,7 @@ func TestTopicProducerMgrMultiPublishWithJsonExt(t *testing.T) {
 			ext = &MsgExt{
 				TraceID:     12345,
 				DispatchTag: "tag123",
-				Custom:      map[string]string{"key1": "val1", "key2": "val2"},
+				Custom:      map[string]interface{}{"key1": "val1", "key2": "val2"},
 			}
 		}
 		extList = append(extList, ext)
@@ -989,7 +989,7 @@ func TestTopicProducerMgrMultiPublishWithJsonExt(t *testing.T) {
 			ext = &MsgExt{
 				TraceID:     12345,
 				DispatchTag: "tag123",
-				Custom:      map[string]string{"key1": "val1", "key2": "val2"},
+				Custom:      map[string]interface{}{"key1": "val1", "key2": "val2"},
 			}
 		}
 		badExtList = append(badExtList, ext)

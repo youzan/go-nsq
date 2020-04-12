@@ -1590,12 +1590,12 @@ func (self *TopicProducerMgr) PublishWithPartitionId(topic string, partition int
 type MsgExt struct {
 	TraceID     uint64
 	DispatchTag string
-	Custom      map[string]string
+	Custom      map[string]interface{}
 }
 
 func (ext *MsgExt) ToJson() []byte {
 	if ext.Custom == nil {
-		ext.Custom = make(map[string]string)
+		ext.Custom = make(map[string]interface{})
 	}
 	if ext.TraceID > 0 {
 		ext.Custom[traceIDExtK] = strconv.FormatUint(ext.TraceID, 10)
