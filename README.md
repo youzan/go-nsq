@@ -16,4 +16,4 @@ Tests are run via `./test.sh` (which requires `nsqd` and `nsqlookupd` to be inst
 [nsq]: https://github.com/youzan/nsq
 [nsq_gopkgdoc]: http://godoc.org/github.com/youzan/go-nsq
 [apps]: https://github.com/youzan/nsq/tree/master/apps
-[travis]: http://travis-ci.org/youzan/go-nsq
+[travis]: http://travis-ci.com/youzan/go-nsq
