@@ -484,7 +484,7 @@ func TestTopicProducerMgrGetNextProducer(t *testing.T) {
 	config := NewConfig()
 	initTopics := make([]string, 0)
 	initTopics = topicList
-	config.PubStrategy = PubRR
+	config.PubStrategy = int(PubRR)
 	w, err := NewTopicProducerMgr(initTopics, config)
 	if err != nil {
 		t.Fatal(err)
@@ -519,6 +519,90 @@ func TestTopicProducerMgrGetNextProducer(t *testing.T) {
 	}
 }
 
+func TestTopicProducerMgrGetNextProducerForDynamicLoad(t *testing.T) {
+	topicName := "topic_producer_mgr_publish" + strconv.Itoa(int(time.Now().Unix()))
+	msgCount := 10
+	topicList := make([]string, 0)
+	for i := 0; i < 3; i++ {
+		topicList = append(topicList, "t"+strconv.Itoa(i)+topicName)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 0)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 1)
+		EnsureTopic(t, 4150, "t"+strconv.Itoa(i)+topicName, 2)
+	}
+
+	// wait nsqd report to lookupd
+	time.Sleep(time.Second * 3)
+	for i := 0; i < 3; i++ {
+		ensureInitChannel(t, "t"+strconv.Itoa(i)+topicName, true)
+	}
+
+	config := NewConfig()
+	initTopics := make([]string, 0)
+	initTopics = topicList
+	config.PubStrategy = int(PubDynamicLoad)
+	w, err := NewTopicProducerMgr(initTopics, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SetLogger(newTestLogger(t), LogLevelInfo)
+	lookupList := make([]string, 0)
+	lookupList = append(lookupList, "127.0.0.1:4161")
+	w.AddLookupdNodes(lookupList)
+	defer w.Stop()
+
+	var testData [][]byte
+	for i := 0; i < msgCount; i++ {
+		testData = append(testData, []byte("multipublish_test_case"))
+	}
+
+	for _, tn := range topicList {
+		_, pid, err := w.getProducer(tn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, pid2, err := w.getProducer(tn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, pid3, err := w.getProducer(tn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pid == pid2 || pid == pid3 || pid2 == pid3 {
+			t.Fatalf("should get different partitions for producer: %v, %v , %v", pid, pid2, pid3)
+		}
+	}
+	// make partition 1 no possible to be chosen
+	// TODO: however, the test case all have the same nsqd node, so we cannot test to choose the different node
+	for _, tn := range topicList {
+		pinfo, err := w.getPartitionProducerInfo(tn)
+		assert.Nil(t, err)
+		addrInfo := pinfo.getSpecificPartitionInfo(1)
+		pp, ok := w.producers[addrInfo.addr]
+		assert.True(t, ok)
+		atomic.StoreInt64(&pp.pendingCnt, 10000)
+	}
+	for _, tn := range topicList {
+		_, pid, err := w.getProducer(tn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// TODO: the test case all have the same nsqd node, so we cannot test to choose the different node
+		_, pid2, err := w.getProducer(tn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// TODO: the test case all have the same nsqd node, so we cannot test to choose the different node
+		_, pid3, err := w.getProducer(tn, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pid == pid2 || pid == pid3 || pid2 == pid3 {
+			t.Fatalf("should get different partitions for producer: %v, %v , %v", pid, pid2, pid3)
+		}
+	}
+}
+
 func TestTopicProducerMgrPubBackground(t *testing.T) {
 	topicName := "topic_producer_mgr_pub_background" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 5
@@ -535,7 +619,6 @@ func TestTopicProducerMgrPubBackground(t *testing.T) {
 	config := NewConfig()
 	config.PubTimeout = time.Second
 	config.PubMaxBackgroundRetry = 10
-	config.PubStrategy = PubRR
 	w, err := NewTopicProducerMgr([]string{topicName}, config)
 	if err != nil {
 		t.Fatal(err)
@@ -683,7 +766,6 @@ func TestTopicProducerMgrRemoveFailedLookupd(t *testing.T) {
 	config.LookupdPollInterval = time.Second
 	initTopics := make([]string, 0)
 	initTopics = topicList
-	config.PubStrategy = PubRR
 	w, err := NewTopicProducerMgr(initTopics, config)
 	if err != nil {
 		t.Fatal(err)
@@ -770,7 +852,6 @@ func TestTopicProducerMgrRemoveNsqdNode(t *testing.T) {
 	config.LookupdPollInterval = time.Second
 	initTopics := make([]string, 0)
 	initTopics = topicList
-	config.PubStrategy = PubRR
 	w, err := NewTopicProducerMgr(initTopics, config)
 	if err != nil {
 		t.Fatal(err)
@@ -1003,7 +1084,6 @@ func TestTopicProducerMgrMultiPublishWithJsonExt(t *testing.T) {
 
 	config := NewConfig()
 
-	config.PubStrategy = PubRR
 	config.DialTimeout = time.Second
 	config.ReadTimeout = time.Second * 6
 	config.HeartbeatInterval = time.Second * 3
@@ -1071,7 +1151,6 @@ func testTopicProducerMgrWithTag(t *testing.T, dynamic bool) {
 	if !dynamic {
 		initTopics = topicList
 	}
-	config.PubStrategy = PubRR
 	config.DialTimeout = time.Second
 	config.ReadTimeout = time.Second * 6
 	config.HeartbeatInterval = time.Second * 3
@@ -1149,7 +1228,6 @@ func testTopicProducerMgr(t *testing.T, dynamic bool) {
 	if !dynamic {
 		initTopics = topicList
 	}
-	config.PubStrategy = PubRR
 	config.DialTimeout = time.Second
 	config.ReadTimeout = time.Second * 6
 	config.HeartbeatInterval = time.Second * 3
@@ -1330,7 +1408,6 @@ func TestQueryLookupd(t *testing.T) {
 
 	config := NewConfig()
 	initTopics := make([]string, 0)
-	config.PubStrategy = PubRR
 	config.DialTimeout = time.Second
 	config.ReadTimeout = time.Second * 6
 	config.HeartbeatInterval = time.Second * 3

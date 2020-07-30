@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -63,6 +64,7 @@ type Producer struct {
 
 	transactionChan chan *ProducerTransaction
 	transactions    []*ProducerTransaction
+	pendingCnt      *int64
 	state           int32
 
 	concurrentProducers int32
@@ -373,6 +375,9 @@ func (w *Producer) router() {
 				continue
 			}
 			w.transactions = append(w.transactions, t)
+			if w.pendingCnt != nil {
+				atomic.AddInt64(w.pendingCnt, 1)
+			}
 			err := w.conn.WriteCommand(t.cmd)
 			if err != nil {
 				w.log(LogLevelError, "(%s) sending command - %s", w.conn.String(), err)
@@ -397,6 +402,9 @@ exit:
 
 func (w *Producer) popTransaction(frameType int32, data []byte) {
 	t := w.transactions[0]
+	if w.pendingCnt != nil {
+		atomic.AddInt64(w.pendingCnt, -1)
+	}
 	w.transactions = w.transactions[1:]
 	if frameType == FrameTypeError {
 		t.Error = ErrProtocol{string(data)}
@@ -417,6 +425,9 @@ func (w *Producer) transactionCleanup() {
 	for _, t := range w.transactions {
 		t.Error = ErrNotConnected
 		t.finish(w.exitChan)
+	}
+	if w.pendingCnt != nil {
+		atomic.AddInt64(w.pendingCnt, int64(-1*len(w.transactions)))
 	}
 	w.transactions = w.transactions[:0]
 
@@ -512,6 +523,17 @@ func (self *TopicPartProducerInfo) removePartitionInfo(index uint32) AddrPartInf
 	return removed
 }
 
+func (self *TopicPartProducerInfo) getMultiPartitionInfoForPick(num int) []AddrPartInfo {
+	total := len(self.allPartitions)
+	index := atomic.AddUint32(&self.currentIndex, 1)
+	addrs := make([]AddrPartInfo, 0, num)
+	for i := index; i < index+uint32(num); i++ {
+		addrInfo1 := self.getPartitionInfo(i % uint32(total))
+		addrs = append(addrs, addrInfo1)
+	}
+	return addrs
+}
+
 func (self *TopicPartProducerInfo) getPartitionInfo(index uint32) AddrPartInfo {
 	if len(self.allPartitions) <= int(index) {
 		return AddrPartInfo{}
@@ -566,6 +588,7 @@ type backgroundCommand struct {
 type producerPool struct {
 	addr         string
 	index        uint64
+	pendingCnt   int64
 	producerList []*Producer
 }
 
@@ -580,6 +603,7 @@ func newProducerPool(addr string, config *Config) (*producerPool, error) {
 		if err != nil {
 			return nil, err
 		}
+		p.pendingCnt = &pp.pendingCnt
 		pp.producerList[i] = p
 	}
 	return pp, nil
@@ -589,6 +613,10 @@ func (pp *producerPool) SetLogger(l logger, lvl LogLevel) {
 	for _, p := range pp.producerList {
 		p.SetLogger(l, lvl)
 	}
+}
+
+func (pp *producerPool) Pending() int64 {
+	return atomic.LoadInt64(&pp.pendingCnt)
 }
 
 func (pp *producerPool) getProducer() *Producer {
@@ -641,7 +669,7 @@ func NewTopicProducerMgr(topics []string, conf *Config) (*TopicProducerMgr, erro
 
 	mgr := &TopicProducerMgr{
 		topics:             make(map[string]*TopicPartProducerInfo, len(topics)),
-		pubStrategy:        conf.PubStrategy,
+		pubStrategy:        PubStrategyType(conf.PubStrategy),
 		producers:          make(map[string]*producerPool),
 		removingProducers:  make(map[string]*RemoveProducerInfo),
 		config:             *conf,
@@ -993,52 +1021,88 @@ func (self *TopicProducerMgr) lookupLoop() {
 	}
 }
 
-func (self *TopicProducerMgr) getNextProducerAddr(partProducerInfo *TopicPartProducerInfo, partitionKey []byte) (int, string) {
+func (self *TopicProducerMgr) getProducerAddrForFixKey(partProducerInfo *TopicPartProducerInfo, partitionKey []byte) (int, string) {
+	addrInfo := AddrPartInfo{"", -1}
+	if !partProducerInfo.isMetaValid || partProducerInfo.meta.PartitionNum <= 0 {
+		self.log(LogLevelError, "partition meta info invalid: %v", partProducerInfo.meta)
+		return -1, ""
+	}
+
+	if self.config.Hasher == nil {
+		self.log(LogLevelError, "missing sharding key hasher")
+		return -1, ""
+	}
+
+	self.hashMtx.Lock()
+	self.config.Hasher.Reset()
+	self.config.Hasher.Write(partitionKey)
+	hashV := self.config.Hasher.Sum32()
+	self.hashMtx.Unlock()
+	pid := int(hashV) % partProducerInfo.meta.PartitionNum
+	addrInfo = partProducerInfo.getSpecificPartitionInfo(pid)
+	return addrInfo.pid, addrInfo.addr
+}
+
+func (self *TopicProducerMgr) getNextProducer(partProducerInfo *TopicPartProducerInfo, partitionKey []byte) (*Producer, int, error) {
 	addrInfo := AddrPartInfo{"", -1}
 	length := len(partProducerInfo.allPartitions)
-	if length == 0 {
-		return -1, ""
-	} else if length == 1 && partitionKey == nil {
+	if length == 1 && partitionKey == nil {
 		addrInfo = partProducerInfo.getPartitionInfo(0)
-		return addrInfo.pid, addrInfo.addr
+	}
+	needChoosePid := true
+	if length <= 1 {
+		needChoosePid = false
+	}
+	if partitionKey != nil {
+		// key is null will use the specific partition
+		needChoosePid = false
+		addrInfo.pid, addrInfo.addr = self.getProducerAddrForFixKey(partProducerInfo, partitionKey)
+	}
+	if !needChoosePid {
+		producerPool, err := self.getProducerFromAddr(addrInfo.addr)
+		if err != nil {
+			return nil, addrInfo.pid, err
+		}
+		return producerPool.getProducer(), addrInfo.pid, nil
+	}
+	if self.pubStrategy > PubDynamicLoad {
+		return nil, 0, errors.New("unsupported pub strategy")
 	}
 	retry := 0
-	index := uint32(0)
 	for addrInfo.addr == "" {
-		if partitionKey == nil {
-			if self.pubStrategy == PubRR {
-				if retry >= length {
-					break
-				}
-				index = atomic.AddUint32(&partProducerInfo.currentIndex, 1)
-				addrInfo = partProducerInfo.getPartitionInfo(index % uint32(len(partProducerInfo.allPartitions)))
-				retry++
-			} else {
-				// not supported strategy
-				return -1, ""
-			}
-		} else {
-			if !partProducerInfo.isMetaValid || partProducerInfo.meta.PartitionNum <= 0 {
-				self.log(LogLevelError, "partition meta info invalid: %v", partProducerInfo.meta)
-				return -1, ""
-			}
-
-			if self.config.Hasher == nil {
-				self.log(LogLevelError, "missing sharding key hasher")
-				return -1, ""
-			}
-
-			self.hashMtx.Lock()
-			self.config.Hasher.Reset()
-			self.config.Hasher.Write(partitionKey)
-			hashV := self.config.Hasher.Sum32()
-			self.hashMtx.Unlock()
-			pid := int(hashV) % partProducerInfo.meta.PartitionNum
-			addrInfo = partProducerInfo.getSpecificPartitionInfo(pid)
+		if retry >= length {
 			break
 		}
+		retry++
+		candNum := 1
+		if self.pubStrategy == PubRR {
+			candNum = 1
+		} else if self.pubStrategy == PubDynamicLoad {
+			candNum = 2
+		}
+		addrInfos := partProducerInfo.getMultiPartitionInfoForPick(candNum)
+		var chosed *producerPool
+		minLoad := int64(math.MaxInt64)
+		for _, addr := range addrInfos {
+			if addr.addr == "" {
+				continue
+			}
+			pp, err := self.getProducerFromAddr(addr.addr)
+			if err != nil {
+				return nil, addr.pid, err
+			}
+			v := pp.Pending()
+			if v < minLoad {
+				chosed = pp
+				minLoad = v
+				addrInfo = addr
+			}
+		}
+		if chosed != nil {
+			return chosed.getProducer(), addrInfo.pid, nil
+		}
 	}
-	return addrInfo.pid, addrInfo.addr
+	return nil, addrInfo.pid, errors.New("no available producer")
 }
 
 func (self *TopicProducerMgr) removeProducerForTopic(topic string, pid int, addr string) {
@@ -1084,6 +1148,7 @@ func (self *TopicProducerMgr) removePartitionsOnProducer(addr string) {
 	}
 	self.topicMtx.Unlock()
 }
+
 func (self *TopicProducerMgr) removeProducer(addr string) {
 	self.log(LogLevelInfo, "removing producer %v ", addr)
 	self.removePartitionsOnProducer(addr)
@@ -1179,14 +1244,14 @@ func (self *TopicProducerMgr) getProducerWithPart(topic string, part int) (*Prod
 
 	addrInfo := partProducerInfo.getSpecificPartitionInfo(part)
 	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, part, addrInfo)
-	producer, err := self.getProducerFromAddr(addrInfo.addr)
+	producerPool, err := self.getProducerFromAddr(addrInfo.addr)
 	if err != nil {
 		return nil, part, err
 	}
-	return producer, part, nil
+	return producerPool.getProducer(), part, nil
 }
 
-func (self *TopicProducerMgr) getProducerFromAddr(addr string) (*Producer, error) {
+func (self *TopicProducerMgr) getProducerFromAddr(addr string) (*producerPool, error) {
 	if addr == "" {
 		select {
 		case self.lookupdRecheckChan <- 1:
@@ -1204,7 +1269,7 @@ func (self *TopicProducerMgr) getProducerFromAddr(addr string) (*Producer, error
 		}
 		producer = removed.producer
 	}
-	return producer.getProducer(), nil
+	return producer, nil
 }
 
 func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*Producer, int, error) {
@@ -1212,13 +1277,16 @@ func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*P
 	if err != nil {
 		return nil, -1, err
 	}
-	pid, addr := self.getNextProducerAddr(partProducerInfo, partitionKey)
-	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pid, addr)
-	producer, err := self.getProducerFromAddr(addr)
+	prod, pid, err := self.getNextProducer(partProducerInfo, partitionKey)
 	if err != nil {
-		return nil, pid, err
+		return prod, pid, err
 	}
-	return producer, pid, nil
+	pendingCnt := int64(0)
+	if prod.pendingCnt != nil {
+		pendingCnt = atomic.LoadInt64(prod.pendingCnt)
+	}
+	self.log(LogLevelDebug, "choosing %v producer: %v, %v, pending: %v", topic, pid, prod.addr, pendingCnt)
+	return prod, pid, err
 }
 
 func (self *TopicProducerMgr) PublishAsync(topic string, body []byte, doneChan chan *ProducerTransaction,
