@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net"
 	"net/url"
 	"os"
@@ -43,6 +42,13 @@ type producerConn interface {
 	WriteCommand(*Command) error
 }
 
+type pubLoadHandler interface {
+	AddPending(c int64)
+	AddCost(time.Duration)
+	GetCost() int64
+	GetPending() int64
+}
+
 // Producer is a high-level type to publish to NSQ.
 //
 // A Producer instance is 1:1 with a destination `nsqd`
@@ -64,7 +70,6 @@ type Producer struct {
 
 	transactionChan chan *ProducerTransaction
 	transactions    []*ProducerTransaction
-	pendingCnt      *int64
 	state           int32
 
 	concurrentProducers int32
@@ -73,6 +78,7 @@ type Producer struct {
 	wg                  sync.WaitGroup
 	guard               sync.Mutex
 	failedCnt           int32
+	pubLoad             pubLoadHandler
 }
 
 // ProducerTransaction is returned by the async publish methods
@@ -165,6 +171,24 @@ func (w *Producer) getLogger() (logger, LogLevel) {
 // String returns the address of the Producer
 func (w *Producer) String() string {
 	return w.addr
+}
+
+func (w *Producer) FailedConnCnt() int32 {
+	return atomic.LoadInt32(&w.failedCnt)
+}
+
+func (w *Producer) AddPubCost(c time.Duration) {
+	if w.pubLoad == nil {
+		return
+	}
+	w.pubLoad.AddCost(c)
+}
+
+func (w *Producer) GetAvgPubCost() int64 {
+	if w.pubLoad == nil {
+		return 0
+	}
+	return w.pubLoad.GetCost()
 }
 
 // Stop initiates a graceful stop of the Producer (permanent)
@@ -375,8 +399,8 @@ func (w *Producer) router() {
 				continue
 			}
 			w.transactions = append(w.transactions, t)
-			if w.pendingCnt != nil {
-				atomic.AddInt64(w.pendingCnt, 1)
+			if w.pubLoad != nil {
+				w.pubLoad.AddPending(1)
 			}
 			err := w.conn.WriteCommand(t.cmd)
 			if err != nil {
@@ -402,8 +426,8 @@ exit:
 
 func (w *Producer) popTransaction(frameType int32, data []byte) {
 	t := w.transactions[0]
-	if w.pendingCnt != nil {
-		atomic.AddInt64(w.pendingCnt, -1)
+	if w.pubLoad != nil {
+		w.pubLoad.AddPending(-1)
 	}
 	w.transactions = w.transactions[1:]
 	if frameType == FrameTypeError {
@@ -426,8 +450,8 @@ func (w *Producer) transactionCleanup() {
 		t.Error = ErrNotConnected
 		t.finish(w.exitChan)
 	}
-	if w.pendingCnt != nil {
-		atomic.AddInt64(w.pendingCnt, int64(-1*len(w.transactions)))
+	if w.pubLoad != nil {
+		w.pubLoad.AddPending(int64(-1 * len(w.transactions)))
 	}
 	w.transactions = w.transactions[:0]
 
@@ -585,17 +609,45 @@ type backgroundCommand struct {
 	rawBytes     []byte
 }
 
+type producerLoadComputer struct {
+	lastAvg    int64
+	pendingCnt int64
+}
+
+func (rtc *producerLoadComputer) AddPending(c int64) {
+	atomic.AddInt64(&rtc.pendingCnt, c)
+}
+
+func (rtc *producerLoadComputer) GetPending() int64 {
+	return atomic.LoadInt64(&rtc.pendingCnt)
+}
+
+func (rtc *producerLoadComputer) AddCost(c time.Duration) {
+	last := atomic.LoadInt64(&rtc.lastAvg)
+	if last <= 0 {
+		atomic.StoreInt64(&rtc.lastAvg, c.Nanoseconds())
+	} else {
+		last = (last*4 + c.Nanoseconds()) / 5
+		atomic.StoreInt64(&rtc.lastAvg, last)
+	}
+}
+
+func (rtc *producerLoadComputer) GetCost() int64 {
+	return atomic.LoadInt64(&rtc.lastAvg)
+}
+
 type producerPool struct {
 	addr         string
 	index        uint64
-	pendingCnt   int64
 	producerList []*Producer
+	loadComputer *producerLoadComputer
 }
 
 func newProducerPool(addr string, config *Config) (*producerPool, error) {
 	pp := &producerPool{
 		addr:         addr,
 		producerList: make([]*Producer, config.ProducerPoolSize),
+		loadComputer: &producerLoadComputer{},
 	}
 
 	for i := 0; i < len(pp.producerList); i++ {
@@ -603,7 +655,7 @@ func newProducerPool(addr string, config *Config) (*producerPool, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.pendingCnt = &pp.pendingCnt
+		p.pubLoad = pp.loadComputer
 		pp.producerList[i] = p
 	}
 	return pp, nil
@@ -615,8 +667,26 @@ func (pp *producerPool) SetLogger(l logger, lvl LogLevel) {
 	}
 }
 
+func (pp *producerPool) IsLessLoad(other *producerPool) bool {
+	if other == nil {
+		return true
+	}
+	if pp.Pending() < other.Pending() {
+		return true
+	} else if pp.Pending() == other.Pending() {
+		if pp.AvgPubRT() < other.AvgPubRT() {
+			return true
+		}
+	}
+	return false
+}
+
 func (pp *producerPool) Pending() int64 {
-	return atomic.LoadInt64(&pp.pendingCnt)
+	return pp.loadComputer.GetPending()
+}
+
+func (pp *producerPool) AvgPubRT() int64 {
+	return pp.loadComputer.GetCost()
 }
 
 func (pp *producerPool) getProducer() *Producer {
@@ -1082,7 +1152,6 @@ func (self *TopicProducerMgr) getNextProducer(partProducerInfo *TopicPartProduce
 		}
 		addrInfos := partProducerInfo.getMultiPartitionInfoForPick(candNum)
 		var chosed *producerPool
-		minLoad := int64(math.MaxInt64)
 		for _, addr := range addrInfos {
 			if addr.addr == "" {
 				continue
@@ -1091,10 +1160,8 @@ func (self *TopicProducerMgr) getNextProducer(partProducerInfo *TopicPartProduce
 			if err != nil {
 				return nil, addr.pid, err
 			}
-			v := pp.Pending()
-			if v < minLoad {
+			if pp.IsLessLoad(chosed) {
 				chosed = pp
-				minLoad = v
 				addrInfo = addr
 			}
 		}
@@ -1282,8 +1349,8 @@ func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*P
 		return prod, pid, err
 	}
 	pendingCnt := int64(0)
-	if prod.pendingCnt != nil {
-		pendingCnt = atomic.LoadInt64(prod.pendingCnt)
+	if prod.pubLoad != nil {
+		pendingCnt = prod.pubLoad.GetPending()
 	}
 	self.log(LogLevelDebug, "choosing %v producer: %v, %v, pending: %v", topic, pid, prod.addr, pendingCnt)
 	return prod, pid, err
@@ -1413,7 +1480,7 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetryAndContextTemplate(
 		if err != nil {
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v, cost %v",
 				producer.addr, topic, pid, err, cost)
-			if atomic.LoadInt32(&producer.failedCnt) > 3 {
+			if producer.FailedConnCnt() > 3 {
 				self.removeProducer(producer.addr)
 			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
@@ -1857,7 +1924,7 @@ func (self *TopicProducerMgr) doCommandWithTimeoutAndRetryTemplate(topic string,
 		if err != nil {
 			self.log(LogLevelInfo, "do command to producer %v for topic %v-%v error: %v, cost: %v",
 				producer.addr, topic, pid, err, cost)
-			if atomic.LoadInt32(&producer.failedCnt) > 3 {
+			if producer.FailedConnCnt() > 3 {
 				self.removeProducer(producer.addr)
 			} else if IsFailedOnNotLeader(err) || IsFailedOnNotWritable(err) ||
 				IsTopicNotExist(err) {
@@ -1870,6 +1937,7 @@ func (self *TopicProducerMgr) doCommandWithTimeoutAndRetryTemplate(topic string,
 			}
 			time.Sleep(MIN_RETRY_SLEEP + time.Millisecond*time.Duration(10*(2<<retry)))
 		} else {
+			producer.AddPubCost(cost)
 			if cost >= time.Second/2 {
 				self.log(LogLevelInfo, "do command to producer %v for topic %v-%v slow cost: %v", producer.addr, topic, pid, cost)
 			}

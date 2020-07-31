@@ -580,7 +580,7 @@ func TestTopicProducerMgrGetNextProducerForDynamicLoad(t *testing.T) {
 		addrInfo := pinfo.getSpecificPartitionInfo(1)
 		pp, ok := w.producers[addrInfo.addr]
 		assert.True(t, ok)
-		atomic.StoreInt64(&pp.pendingCnt, 10000)
+		pp.loadComputer.AddPending(10000)
 	}
 	for _, tn := range topicList {
 		_, pid, err := w.getProducer(tn, nil)
