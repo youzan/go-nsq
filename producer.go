@@ -792,6 +792,24 @@ func (self *TopicProducerMgr) Stop() {
 	self.wg.Wait()
 }
 
+type ProducerStat struct {
+	Pending int64
+	AvgRt   int64
+}
+
+func (self *TopicProducerMgr) Stat() map[string]ProducerStat {
+	stat := make(map[string]ProducerStat)
+	self.producerMtx.RLock()
+	defer self.producerMtx.RUnlock()
+	for addr, pp := range self.producers {
+		stat[addr] = ProducerStat{
+			Pending: pp.Pending(),
+			AvgRt:   pp.AvgPubRT(),
+		}
+	}
+	return stat
+}
+
 func (self *TopicProducerMgr) SetEtcdConf(servers []string, cluster string, lookupPath string) {
 	self.etcdServers = servers
 	self.etcdClusterID = cluster
