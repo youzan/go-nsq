@@ -506,7 +506,7 @@ type PubStrategyType int
 
 const (
 	PubRR PubStrategyType = iota
-	// not yet supported
+	// choose the pub node based on the pending and avg rt
 	PubDynamicLoad
 )
 
