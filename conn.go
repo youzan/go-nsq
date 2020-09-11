@@ -19,6 +19,10 @@ import (
 	"github.com/golang/snappy"
 )
 
+var (
+	maxCleanupWaiting = time.Minute
+)
+
 // IdentifyResponse represents the metadata
 // returned from an IDENTIFY command to nsqd
 type IdentifyResponse struct {
@@ -688,7 +692,7 @@ func (c *Conn) cleanup() {
 			msgsInFlight = atomic.AddInt64(&c.messagesInFlight, -1)
 		case <-ticker.C:
 			msgsInFlight = atomic.LoadInt64(&c.messagesInFlight)
-			if time.Since(start) > time.Minute {
+			if time.Since(start) > maxCleanupWaiting {
 				c.log(LogLevelWarning, "draining... waiting for %d messages in flight too long since: %v", msgsInFlight, start)
 				goto exit
 			}
@@ -728,7 +732,12 @@ func (c *Conn) waitForCleanup() {
 }
 
 func (c *Conn) onMessageFinish(m *Message) {
-	c.msgResponseChan <- &msgResponse{msg: m, cmd: Finish(m.ID), success: true}
+	select {
+	case c.msgResponseChan <- &msgResponse{msg: m, cmd: Finish(m.ID), success: true}:
+	case <-c.exitChan:
+		atomic.AddInt64(&c.messagesInFlight, -1)
+		c.log(LogLevelInfo, "finish %v ignored while exit", m)
+	}
 }
 
 func (c *Conn) onMessageRequeue(m *Message, delay time.Duration, backoff bool) {
@@ -740,7 +749,13 @@ func (c *Conn) onMessageRequeue(m *Message, delay time.Duration, backoff bool) {
 			delay = c.config.MaxRequeueDelay
 		}
 	}
-	c.msgResponseChan <- &msgResponse{msg: m, cmd: Requeue(m.ID, delay), success: false, backoff: backoff}
+	select {
+	case c.msgResponseChan <- &msgResponse{msg: m, cmd: Requeue(m.ID, delay), success: false, backoff: backoff}:
+	case <-c.exitChan:
+		atomic.AddInt64(&c.messagesInFlight, -1)
+		c.log(LogLevelInfo, "req %v ignored while exit", m)
+	}
+
 }
 
 func (c *Conn) onMessageTouch(m *Message) {

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -27,6 +28,7 @@ type MyTestHandler struct {
 	messagesFailed   int
 	tag              string
 	expectFailed     int
+	blockingTime     time.Duration
 }
 
 type NsqdlookupdWrapper struct {
@@ -51,7 +53,7 @@ func (self *NsqdlookupdWrapper) fakeListLookupdWrap(w http.ResponseWriter, r *ht
 }
 
 func (self *NsqdlookupdWrapper) fakeListLookupdWrapSupplier(response string) func(http.ResponseWriter, *http.Request) {
-	return func (w http.ResponseWriter, r *http.Request) {w.Write([]byte(response))}
+	return func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(response)) }
 }
 
 func (self *NsqdlookupdWrapper) fakeLookupdWrap(w http.ResponseWriter, r *http.Request) {
@@ -191,6 +193,9 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 	}
 	h.messagesReceived++
 	h.t.Logf("received message: %v, %v", h.messagesReceived, GetNewMessageID(message.ID[:]))
+	if h.blockingTime > 0 && h.messagesReceived > 1 {
+		time.Sleep(h.blockingTime)
+	}
 	return nil
 }
 
@@ -741,5 +746,208 @@ func consumerTest(t *testing.T, cb func(c *Config)) {
 	}
 	if h.messagesFailed != h.expectFailed {
 		t.Fatal("failed message not done")
+	}
+}
+
+func TestConsumerBackoffOnDifferentNode(t *testing.T) {
+	// test backoff on one node should not affect the other node
+}
+
+func TestConsumerBlockingOnHandler(t *testing.T) {
+	maxCleanupWaiting = time.Second * 10
+	maxStopWaiting = time.Second * 5
+	// block handler and test the consumer call r.exit() early before the handler returned
+	// block handler and test finish after the conn cleanup
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+	// so that the test can simulate reaching max requeues and a call to LogFailedMessage
+	config.DefaultRequeueDelay = 0
+	// so that the test wont timeout from backing off
+	config.MaxBackoffDuration = time.Millisecond * 50
+	config.MaxAttempts = 7
+	config.LookupdPollInterval = time.Second
+	config.MsgTimeout = time.Minute
+
+	topicName := "rdr_blocking_test"
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	q, _ := NewConsumer(topicName, "ch", config)
+
+	q.SetLogger(newTestLogger(t), LogLevelDebug)
+
+	h := &MyTestHandler{
+		t:            t,
+		q:            q,
+		expectFailed: 1,
+		blockingTime: time.Second * 15,
+	}
+	q.AddHandler(h)
+
+	EnsureTopic(t, 4150, topicName, 0)
+
+	addr := "127.0.0.1:4150"
+	err := q.ConnectToNSQD(addr, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendMessage(t, 4151, topicName, "mpub", []byte("{\"msg\":\"double\"}\n{\"msg\":\"double\"}"))
+	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
+	h.messagesSent = 4
+
+	stats := q.Stats()
+	if stats.Connections == 0 {
+		t.Fatal("stats report 0 connections (should be > 0)")
+	}
+	time.Sleep(time.Second)
+	s := time.Now()
+	q.Stop()
+	select {
+	case <-q.StopChan:
+	case <-time.After(h.blockingTime):
+		t.Errorf("should stop after timeout")
+	}
+
+	stats = q.Stats()
+	if stats.Connections == 0 {
+		t.Errorf("should have active connections while blocking consumer")
+	}
+	for {
+		stats = q.Stats()
+		if stats.Connections == 0 {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	cost := time.Since(s)
+	if cost > h.blockingTime*time.Duration(h.messagesSent) {
+		t.Errorf("should not blocking too long: %s", cost)
+	}
+	stats = q.Stats()
+	if stats.MessagesReceived != uint64(h.messagesReceived+h.messagesFailed) {
+		t.Errorf("stats report %d messages received (should be %d+%d)",
+			stats.MessagesReceived,
+			h.messagesReceived, h.messagesFailed)
+	}
+	if h.messagesReceived != h.messagesSent {
+		t.Errorf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
+	}
+	// the failed message will not be requeued after stopped, so it will be ignored
+	if h.messagesFailed != 0 {
+		t.Errorf("failed message not done: %v, %v", h.messagesFailed, h.expectFailed)
+	}
+}
+
+func TestConsumerBlockingOnHandlerWhileConnClosed(t *testing.T) {
+	maxCleanupWaiting = time.Second * 10
+	maxStopWaiting = time.Second * 5
+	// block handler and test the consumer call r.exit() early before the handler returned
+	// block handler and test finish after the conn cleanup
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+	// so that the test can simulate reaching max requeues and a call to LogFailedMessage
+	config.DefaultRequeueDelay = 0
+	// so that the test wont timeout from backing off
+	config.MaxBackoffDuration = time.Millisecond * 50
+	config.MaxAttempts = 7
+	config.LookupdPollInterval = time.Second
+	config.MsgTimeout = time.Minute
+
+	topicName := "rdr_blocking_test_connclosed"
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	q, _ := NewConsumer(topicName, "ch", config)
+
+	q.SetLogger(newTestLogger(t), LogLevelDebug)
+
+	h := &MyTestHandler{
+		t:            t,
+		q:            q,
+		expectFailed: 1,
+		blockingTime: time.Second * 15,
+	}
+	q.AddHandler(h)
+
+	EnsureTopic(t, 4150, topicName, 0)
+
+	addr := "127.0.0.1:4150"
+	err := q.ConnectToNSQD(addr, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SendMessage(t, 4151, topicName, "pub", []byte(`{"msg":"single"}`))
+	SendMessage(t, 4151, topicName, "mpub", []byte("{\"msg\":\"double\"}\n{\"msg\":\"double\"}"))
+	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
+	h.messagesSent = 4
+
+	stats := q.Stats()
+	if stats.Connections == 0 {
+		t.Fatal("stats report 0 connections (should be > 0)")
+	}
+
+	time.Sleep(time.Second)
+	s := time.Now()
+	q.Stop()
+	select {
+	case <-q.StopChan:
+	case <-time.After(h.blockingTime):
+		t.Errorf("should stop after timeout")
+	}
+
+	stats = q.Stats()
+	if stats.Connections != 0 {
+		t.Logf("stats report %d active connections", stats.Connections)
+	}
+
+	// force close the connection to trigger the cleanup on connection
+	for _, c := range q.conns() {
+		c.conn.Close()
+	}
+
+	for {
+		stats = q.Stats()
+		if stats.Connections == 0 {
+			break
+		}
+		time.Sleep(time.Second)
+		if time.Since(s) > time.Minute {
+			t.Errorf("timeout wait")
+		}
+	}
+	cost := time.Since(s)
+	if cost > h.blockingTime*time.Duration(h.messagesSent) {
+		t.Errorf("should not blocking too long: %s", cost)
+	}
+	stats = q.Stats()
+	if stats.MessagesReceived != uint64(h.messagesSent) {
+		t.Errorf("stats report %d messages received (should be %d+%d)",
+			stats.MessagesReceived,
+			h.messagesReceived, h.messagesFailed)
+	}
+	if int(stats.MessagesFinished) >= h.messagesSent-1 {
+		t.Errorf("end of test. should ignore some number of messages (got %d, sent %d)", stats, h.messagesSent)
+	}
+	if h.messagesReceived+h.messagesFailed >= h.messagesSent {
+		t.Errorf("end of test. should ignore some number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
+	}
+	// the failed message will not be requeued after stopped, so it will be ignored
+	if h.messagesFailed != 0 {
+		t.Errorf("failed message should be ignored: %v, %v", h.messagesFailed, h.expectFailed)
+	}
+	for {
+		stats = q.Stats()
+		if int(stats.MessagesFinished) == h.messagesSent {
+			break
+		}
+		if atomic.LoadInt32(&q.runningHandlers) == 0 {
+			break
+		}
+		time.Sleep(time.Second)
+		if time.Since(s) > h.blockingTime*time.Duration(h.messagesSent) {
+			t.Errorf("timeout wait")
+			break
+		}
 	}
 }

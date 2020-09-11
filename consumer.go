@@ -23,6 +23,10 @@ const (
 	OLD_VERSION_PID = -11
 )
 
+var (
+	maxStopWaiting = time.Second * 30
+)
+
 // Handler is the message processing interface for Consumer
 //
 // Implement this interface for handlers that return whether or not message
@@ -188,7 +192,7 @@ func NewPartitionConsumer(topic string, part int, channel string, config *Config
 		logLvl:      LogLevelInfo,
 		maxInFlight: int32(config.MaxInFlight),
 
-		incomingMessages: make(chan *Message),
+		incomingMessages: make(chan *Message, 100),
 
 		rdyRetryTimers:     make(map[string]*time.Timer),
 		pendingConnections: make(map[string]*Conn),
@@ -1020,6 +1024,9 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal) {
 		return
 	}
 
+	// TODO: we should use different backoff counter for different connections
+	// which will allow we backoff only single partition without affecting the other partitions
+
 	// update backoff state
 	backoffUpdated := false
 	backoffCounter := atomic.LoadInt32(&r.backoffCounter)
@@ -1327,7 +1334,7 @@ func (r *Consumer) Stop() {
 			}
 		}
 
-		time.AfterFunc(time.Second*30, func() {
+		time.AfterFunc(maxStopWaiting, func() {
 			// if we've waited this long handlers are blocked on processing messages
 			// so we can't just stopHandlers (if any adtl. messages were pending processing
 			// we would cause a panic on channel close)
@@ -1395,6 +1402,7 @@ func (r *Consumer) handlerLoop(handler Handler) {
 
 func (r *Consumer) handlerFuncLoop(handlerFunc HandlerFunc, failedFunc FailHandlerFunc) {
 	r.log(LogLevelDebug, "starting Handler")
+	defer r.log(LogLevelDebug, "stopped Handler")
 
 	for {
 		message, ok := <-r.incomingMessages
@@ -1422,7 +1430,6 @@ func (r *Consumer) handlerFuncLoop(handlerFunc HandlerFunc, failedFunc FailHandl
 	}
 
 exit:
-	r.log(LogLevelDebug, "stopping Handler")
 	if atomic.AddInt32(&r.runningHandlers, -1) == 0 {
 		r.exit()
 	}
@@ -1445,9 +1452,11 @@ func (r *Consumer) shouldFailMessage(message *Message, handlerFunc FailHandlerFu
 
 func (r *Consumer) exit() {
 	r.exitHandler.Do(func() {
+		r.log(LogLevelInfo, "begin exiting")
 		close(r.exitChan)
 		r.wg.Wait()
 		close(r.StopChan)
+		r.log(LogLevelInfo, "exited")
 	})
 }
 
