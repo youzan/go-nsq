@@ -80,7 +80,6 @@ type Conn struct {
 	msgResponseChan chan *msgResponse
 	exitChan        chan int
 	drainReady      chan int
-	cleanupDone     chan int
 
 	closeFlag int32
 	stopper   sync.Once
@@ -107,7 +106,6 @@ func NewConn(addr string, config *Config, delegate ConnDelegate) *Conn {
 		msgResponseChan: make(chan *msgResponse),
 		exitChan:        make(chan int),
 		drainReady:      make(chan int),
-		cleanupDone:     make(chan int),
 	}
 }
 
@@ -716,7 +714,6 @@ func (c *Conn) cleanup() {
 
 exit:
 	ticker.Stop()
-	close(c.cleanupDone)
 	c.wg.Done()
 	c.log(LogLevelInfo, "finished draining, cleanup exiting")
 }
@@ -733,7 +730,8 @@ func (c *Conn) waitForCleanup() {
 func (c *Conn) onMessageFinish(m *Message) {
 	select {
 	case c.msgResponseChan <- &msgResponse{msg: m, cmd: Finish(m.ID), success: true}:
-	case <-c.cleanupDone:
+	case <-c.exitChan:
+		atomic.AddInt64(&c.messagesInFlight, -1)
 	}
 }
 
@@ -748,7 +746,8 @@ func (c *Conn) onMessageRequeue(m *Message, delay time.Duration, backoff bool) {
 	}
 	select {
 	case c.msgResponseChan <- &msgResponse{msg: m, cmd: Requeue(m.ID, delay), success: false, backoff: backoff}:
-	case <-c.cleanupDone:
+	case <-c.exitChan:
+		atomic.AddInt64(&c.messagesInFlight, -1)
 	}
 }
 
