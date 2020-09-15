@@ -174,7 +174,7 @@ func (m *Message) RequeueWithoutBackoff(delay time.Duration) {
 // only do the backoff on the connection which send this message. This is useful while
 // only a single connection need to be paused but others need continue consume.
 func (m *Message) RequeueBackoffSingleConn(delay time.Duration) {
-	m.doRequeue(delay, false, true)
+	m.doRequeue(delay, true, true)
 }
 
 func (m *Message) doRequeue(delay time.Duration, backoff bool, connOnly bool) {
