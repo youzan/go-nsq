@@ -39,7 +39,7 @@ type MessageDelegate interface {
 
 	// OnRequeue is called when the Requeue() method
 	// is triggered on the Message
-	OnRequeue(m *Message, delay time.Duration, backoff bool)
+	OnRequeue(m *Message, delay time.Duration, backoff bool, connOnly bool)
 
 	// OnTouch is called when the Touch() method
 	// is triggered on the Message
@@ -51,8 +51,8 @@ type connMessageDelegate struct {
 }
 
 func (d *connMessageDelegate) OnFinish(m *Message) { d.c.onMessageFinish(m) }
-func (d *connMessageDelegate) OnRequeue(m *Message, t time.Duration, b bool) {
-	d.c.onMessageRequeue(m, t, b)
+func (d *connMessageDelegate) OnRequeue(m *Message, t time.Duration, b bool, connOnly bool) {
+	d.c.onMessageRequeue(m, t, b, connOnly)
 }
 func (d *connMessageDelegate) OnTouch(m *Message) { d.c.onMessageTouch(m) }
 
@@ -80,7 +80,8 @@ type ConnDelegate interface {
 	OnMessageRequeued(*Conn, *Message)
 
 	// OnBackoff is called when the connection triggers a backoff state
-	OnBackoff(*Conn)
+	// bool indicated whether it is only related to current connection
+	OnBackoff(*Conn, bool)
 
 	// OnContinue is called when the connection finishes a message without adjusting backoff state
 	OnContinue(*Conn)
@@ -112,7 +113,7 @@ func (d *consumerConnDelegate) OnError(c *Conn, data []byte)          { d.r.onCo
 func (d *consumerConnDelegate) OnMessage(c *Conn, m *Message)         { d.r.onConnMessage(c, m) }
 func (d *consumerConnDelegate) OnMessageFinished(c *Conn, m *Message) { d.r.onConnMessageFinished(c, m) }
 func (d *consumerConnDelegate) OnMessageRequeued(c *Conn, m *Message) { d.r.onConnMessageRequeued(c, m) }
-func (d *consumerConnDelegate) OnBackoff(c *Conn)                     { d.r.onConnBackoff(c) }
+func (d *consumerConnDelegate) OnBackoff(c *Conn, connOnly bool)      { d.r.onConnBackoff(c, connOnly) }
 func (d *consumerConnDelegate) OnContinue(c *Conn)                    { d.r.onConnContinue(c) }
 func (d *consumerConnDelegate) OnResume(c *Conn)                      { d.r.onConnResume(c) }
 func (d *consumerConnDelegate) OnIOError(c *Conn, err error)          { d.r.onConnIOError(c, err) }
@@ -130,7 +131,7 @@ func (d *producerConnDelegate) OnError(c *Conn, data []byte)          { d.w.onCo
 func (d *producerConnDelegate) OnMessage(c *Conn, m *Message)         {}
 func (d *producerConnDelegate) OnMessageFinished(c *Conn, m *Message) {}
 func (d *producerConnDelegate) OnMessageRequeued(c *Conn, m *Message) {}
-func (d *producerConnDelegate) OnBackoff(c *Conn)                     {}
+func (d *producerConnDelegate) OnBackoff(c *Conn, connOnly bool)      {}
 func (d *producerConnDelegate) OnContinue(c *Conn)                    {}
 func (d *producerConnDelegate) OnResume(c *Conn)                      {}
 func (d *producerConnDelegate) OnIOError(c *Conn, err error)          { d.w.onConnIOError(c, err) }

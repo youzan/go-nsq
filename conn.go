@@ -42,10 +42,11 @@ type AuthResponse struct {
 }
 
 type msgResponse struct {
-	msg     *Message
-	cmd     *Command
-	success bool
-	backoff bool
+	msg      *Message
+	cmd      *Command
+	success  bool
+	backoff  bool
+	connOnly bool
 }
 
 // Conn represents a connection to nsqd
@@ -609,7 +610,7 @@ func (c *Conn) writeLoop() {
 				c.log(LogLevelDebug, "REQ %s", resp.msg.ID)
 				c.delegate.OnMessageRequeued(c, resp.msg)
 				if resp.backoff {
-					c.delegate.OnBackoff(c)
+					c.delegate.OnBackoff(c, resp.connOnly)
 				} else {
 					c.delegate.OnContinue(c)
 				}
@@ -740,7 +741,7 @@ func (c *Conn) onMessageFinish(m *Message) {
 	}
 }
 
-func (c *Conn) onMessageRequeue(m *Message, delay time.Duration, backoff bool) {
+func (c *Conn) onMessageRequeue(m *Message, delay time.Duration, backoff bool, connOnly bool) {
 	if delay == -1 {
 		// linear delay
 		delay = c.config.DefaultRequeueDelay * time.Duration(m.Attempts)
@@ -750,7 +751,7 @@ func (c *Conn) onMessageRequeue(m *Message, delay time.Duration, backoff bool) {
 		}
 	}
 	select {
-	case c.msgResponseChan <- &msgResponse{msg: m, cmd: Requeue(m.ID, delay), success: false, backoff: backoff}:
+	case c.msgResponseChan <- &msgResponse{msg: m, cmd: Requeue(m.ID, delay), success: false, backoff: backoff, connOnly: connOnly}:
 	case <-c.exitChan:
 		atomic.AddInt64(&c.messagesInFlight, -1)
 		c.log(LogLevelInfo, "req %v ignored while exit", m)

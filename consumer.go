@@ -881,16 +881,16 @@ func (r *Consumer) onConnMessageRequeued(c *Conn, msg *Message) {
 	atomic.AddUint64(&r.messagesRequeued, 1)
 }
 
-func (r *Consumer) onConnBackoff(c *Conn) {
-	r.startStopContinueBackoff(c, backoffFlag)
+func (r *Consumer) onConnBackoff(c *Conn, connOnly bool) {
+	r.startStopContinueBackoff(c, backoffFlag, connOnly)
 }
 
 func (r *Consumer) onConnContinue(c *Conn) {
-	r.startStopContinueBackoff(c, continueFlag)
+	r.startStopContinueBackoff(c, continueFlag, false)
 }
 
 func (r *Consumer) onConnResume(c *Conn) {
-	r.startStopContinueBackoff(c, resumeFlag)
+	r.startStopContinueBackoff(c, resumeFlag, false)
 }
 
 func (r *Consumer) onConnResponse(c *Conn, data []byte) {
@@ -1014,7 +1014,7 @@ func (r *Consumer) onConnClose(c *Conn) {
 	}
 }
 
-func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal) {
+func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, connOnly bool) {
 	// prevent many async failures/successes from immediately resulting in
 	// max backoff/normal rate (by ensuring that we dont continually incr/decr
 	// the counter during a backoff period)
@@ -1024,8 +1024,18 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal) {
 		return
 	}
 
-	// TODO: we should use different backoff counter for different connections
-	// which will allow we backoff only single partition without affecting the other partitions
+	// Allow backoff only single partition without affecting the other partitions
+	if backoffFlag == signal && connOnly {
+		r.updateRDY(conn, 0)
+		total := int64(0)
+		for _, c := range r.conns() {
+			total += c.RDY()
+		}
+		if total > 0 {
+			return
+		}
+		// if all rdy is 0, we go into backoff state anyway
+	}
 
 	// update backoff state
 	backoffUpdated := false

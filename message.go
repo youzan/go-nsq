@@ -158,7 +158,7 @@ func (m *Message) Touch() {
 // based on the number of attempts and the
 // configured default_requeue_delay
 func (m *Message) Requeue(delay time.Duration) {
-	m.doRequeue(delay, true)
+	m.doRequeue(delay, true, false)
 }
 
 // RequeueWithoutBackoff sends a REQ command to the nsqd which
@@ -167,14 +167,21 @@ func (m *Message) Requeue(delay time.Duration) {
 // Notably, using this method to respond does not trigger a backoff
 // event on the configured Delegate.
 func (m *Message) RequeueWithoutBackoff(delay time.Duration) {
-	m.doRequeue(delay, false)
+	m.doRequeue(delay, false, false)
 }
 
-func (m *Message) doRequeue(delay time.Duration, backoff bool) {
+// RequeueBackoffSingleConn send a REQ to the nsqd which sent this message and
+// only do the backoff on the connection which send this message. This is useful while
+// only a single connection need to be paused but others need continue consume.
+func (m *Message) RequeueBackoffSingleConn(delay time.Duration) {
+	m.doRequeue(delay, false, true)
+}
+
+func (m *Message) doRequeue(delay time.Duration, backoff bool, connOnly bool) {
 	if !atomic.CompareAndSwapInt32(&m.responded, 0, 1) {
 		return
 	}
-	m.Delegate.OnRequeue(m, delay, backoff)
+	m.Delegate.OnRequeue(m, delay, backoff, connOnly)
 }
 
 // WriteTo implements the WriterTo interface and serializes
