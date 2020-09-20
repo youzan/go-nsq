@@ -1036,6 +1036,9 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 			total += c.RDY()
 		}
 		if total > 0 {
+			time.AfterFunc(time.Minute/2, func() {
+				r.updateRDY(conn, 1)
+			})
 			return
 		}
 		// if all rdy is 0, we go into backoff state anyway
