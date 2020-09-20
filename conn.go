@@ -603,11 +603,11 @@ func (c *Conn) writeLoop() {
 			msgsInFlight := atomic.AddInt64(&c.messagesInFlight, -1)
 
 			if resp.success {
-				c.log(LogLevelDebug, "FIN %s", resp.msg.ID)
+				//c.log(LogLevelDebug, "FIN %s", resp.msg.ID)
 				c.delegate.OnMessageFinished(c, resp.msg)
 				c.delegate.OnResume(c)
 			} else {
-				c.log(LogLevelDebug, "REQ %s", resp.msg.ID)
+				//c.log(LogLevelDebug, "REQ %s", resp.msg.ID)
 				c.delegate.OnMessageRequeued(c, resp.msg)
 				if resp.backoff {
 					c.delegate.OnBackoff(c, resp.connOnly)

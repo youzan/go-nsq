@@ -1037,7 +1037,8 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 		}
 		if total > 0 {
 			time.AfterFunc(time.Minute/2, func() {
-				r.updateRDY(conn, 1)
+				count := r.perConnMaxInFlight()
+				r.updateRDY(conn, count)
 			})
 			return
 		}
