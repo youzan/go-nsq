@@ -180,6 +180,10 @@ func NewPartitionConsumer(topic string, part int, channel string, config *Config
 		return nil, errors.New("invalid channel name")
 	}
 
+	lv := LogLevelInfo
+	if config.EnableDebugLog {
+		lv = LogLevelDebug
+	}
 	r := &Consumer{
 		id: atomic.AddInt64(&instCount, 1),
 
@@ -188,8 +192,8 @@ func NewPartitionConsumer(topic string, part int, channel string, config *Config
 		channel:   channel,
 		config:    *config,
 
-		logger:      log.New(os.Stderr, "", log.Flags()),
-		logLvl:      LogLevelInfo,
+		logger:      log.New(os.Stderr, "", log.Flags()|log.Lmicroseconds),
+		logLvl:      lv,
 		maxInFlight: int32(config.MaxInFlight),
 
 		incomingMessages: make(chan *Message, 100),
