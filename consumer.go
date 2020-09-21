@@ -817,6 +817,26 @@ func indexOf(n string, h []string) int {
 	return -1
 }
 
+// close connections only
+func (r *Consumer) CloseConnsForTest(addr string) {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+	if addr == "" {
+		for _, conn := range r.connections {
+			conn.CloseRead()
+		}
+		return
+	}
+	pendingConn, pendingOk := r.pendingConnections[addr]
+	conn, ok := r.connections[addr]
+	if ok {
+		conn.CloseRead()
+	}
+	if pendingOk {
+		pendingConn.CloseRead()
+	}
+}
+
 // DisconnectFromNSQD closes the connection to and removes the specified
 // `nsqd` address from the list
 func (r *Consumer) DisconnectFromNSQD(addr string, part string) error {
