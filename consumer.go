@@ -822,18 +822,22 @@ func (r *Consumer) CloseConnsForTest(addr string) {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
 	if addr == "" {
+		i := 0
 		for _, conn := range r.connections {
-			conn.CloseRead()
+			i += 1
+			if i%2 == 0 {
+				conn.CloseConn()
+			}
 		}
 		return
 	}
 	pendingConn, pendingOk := r.pendingConnections[addr]
 	conn, ok := r.connections[addr]
 	if ok {
-		conn.CloseRead()
+		conn.CloseConn()
 	}
 	if pendingOk {
-		pendingConn.CloseRead()
+		pendingConn.CloseConn()
 	}
 }
 

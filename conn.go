@@ -191,6 +191,12 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 	return resp, nil
 }
 
+func (c *Conn) CloseConn() {
+	if c.conn != nil {
+		c.conn.CloseRead()
+	}
+}
+
 // Close idempotently initiates connection close
 func (c *Conn) CloseRead() error {
 	atomic.StoreInt32(&c.closeFlag, 1)
