@@ -1053,6 +1053,12 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 		if backoffCounter > 0 {
 			backoffCounter--
 			backoffUpdated = true
+		} else if conn.RDY() <= 0 || time.Since(conn.LastRdyTime()) >= time.Minute {
+			// while backoff on single conn, it may fail to recover, so if we resumed once, we try exit backoff on this single connection
+			count := r.perConnMaxInFlight()
+			if conn.RDY() != count {
+				r.updateRDY(conn, count)
+			}
 		}
 	case backoffFlag:
 		nextBackoff := r.config.BackoffStrategy.Calculate(int(backoffCounter) + 1)
@@ -1186,10 +1192,12 @@ func (r *Consumer) rdyLoop() {
 			// we should resume later next time
 			lastResume = time.Now()
 			for _, conn := range conns {
-				r := conn.RDY()
-				if r > 0 {
+				rdy := conn.RDY()
+				if rdy <= 0 && lastResume.Sub(conn.LastRdyTime()) >= time.Minute {
+					r.updateRDY(conn, 1)
+				}
+				if rdy > 0 {
 					needResume = false
-					break
 				}
 			}
 			if needResume {
