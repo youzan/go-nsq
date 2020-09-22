@@ -1063,6 +1063,7 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 			time.AfterFunc(time.Minute/2, func() {
 				count := r.perConnMaxInFlight()
 				r.updateRDY(conn, count)
+				r.log(LogLevelDebug, "conn %v exiting backoff, returning RDY to %d", conn.String(), count)
 			})
 			return
 		}
