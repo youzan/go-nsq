@@ -1054,7 +1054,9 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 
 	// Allow backoff only single partition without affecting the other partitions
 	if backoffFlag == signal && connOnly {
-		r.updateRDY(conn, 0)
+		if conn.RDY() != 0 {
+			r.updateRDY(conn, 0)
+		}
 		total := int64(0)
 		for _, c := range r.conns() {
 			total += c.RDY()
