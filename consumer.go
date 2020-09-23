@@ -1247,9 +1247,11 @@ exit:
 
 func (r *Consumer) updateRDY(c *Conn, count int64) error {
 	if c.IsClosing() {
+		r.log(LogLevelInfo, "ignore update ready when exiting")
 		return ErrClosing
 	}
 
+	r.log(LogLevelDebug, "try update ready to: %v", count)
 	// never exceed the nsqd's configured max RDY count
 	if count > c.MaxRDY() {
 		count = c.MaxRDY()
@@ -1270,11 +1272,13 @@ func (r *Consumer) updateRDY(c *Conn, count int64) error {
 	if maxPossibleRdy > 0 && maxPossibleRdy < count {
 		count = maxPossibleRdy
 	}
+	r.log(LogLevelDebug, "try update ready from %v to: %v", rdyCount, count)
 	if maxPossibleRdy <= 0 && count > 0 {
 		if rdyCount == 0 {
 			// we wanted to exit a zero RDY count but we couldn't send it...
 			// in order to prevent eternal starvation we reschedule this attempt
 			// (if any other RDY update succeeds this timer will be stopped)
+			r.log(LogLevelInfo, "try update ready from %v to: %v later", rdyCount, count)
 			r.rdyRetryMtx.Lock()
 			r.rdyRetryTimers[c.GetConnUID()] = time.AfterFunc(5*time.Second,
 				func() {
@@ -1282,6 +1286,7 @@ func (r *Consumer) updateRDY(c *Conn, count int64) error {
 				})
 			r.rdyRetryMtx.Unlock()
 		}
+		r.log(LogLevelDebug, "try update ready from %v to: %v overflow inflight", rdyCount, count)
 		return ErrOverMaxInFlight
 	}
 
