@@ -1054,7 +1054,8 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 
 	// Allow backoff only single partition without affecting the other partitions
 	if backoffFlag == signal && connOnly {
-		if conn.RDY() != 0 {
+		oldRdy := conn.RDY()
+		if oldRdy != 0 {
 			r.updateRDY(conn, 0)
 		}
 		total := int64(0)
@@ -1062,6 +1063,9 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 			total += c.RDY()
 		}
 		if total > 0 {
+			if oldRdy == 0 {
+				return
+			}
 			time.AfterFunc(time.Minute/2, func() {
 				count := r.perConnMaxInFlight()
 				r.updateRDY(conn, count)
