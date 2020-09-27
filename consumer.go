@@ -1066,7 +1066,8 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 			if oldRdy == 0 {
 				return
 			}
-			time.AfterFunc(time.Minute/2, func() {
+			// since the heartbeat is 30s, we should less than that
+			time.AfterFunc(time.Minute/4, func() {
 				count := r.perConnMaxInFlight()
 				r.updateRDY(conn, count)
 				r.log(LogLevelDebug, "conn %v exiting backoff, returning RDY to %d", conn.String(), count)
