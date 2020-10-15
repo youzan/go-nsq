@@ -277,7 +277,11 @@ func DecodeMessageWithExt(b []byte, ext bool, disableDecompress bool) (*Message,
 		if disableDecompress {
 			msg.Body = b[pos:]
 		} else {
-			msg.Body, err = tryDecompress(b[pos:], json)
+			var decompressed bool
+			msg.Body, decompressed, err = tryDecompress(b[pos:], json)
+			if decompressed {
+				removeCompressHeader(&msg, json)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -288,17 +292,17 @@ func DecodeMessageWithExt(b []byte, ext bool, disableDecompress bool) (*Message,
 	return &msg, nil
 }
 
-func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, error) {
+func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, bool, error) {
 	compressH := ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY]
 	compressHStr, _ := compressH.(string)
 	if compressHStr != "" {
 		codecNo, err := strconv.Atoi(compressHStr)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		codec, err := GetNSQClientCompressCodeByCodecNo(codecNo)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		compressHSize := ext.Custom[NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY]
 		origSizeStr, ok := compressHSize.(string)
@@ -306,7 +310,7 @@ func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, error) {
 		if ok {
 			originalMsgSize, err = strconv.Atoi(origSizeStr)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		} else {
 			//try luck with wild guess
@@ -314,17 +318,24 @@ func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, error) {
 		}
 		decompressed, err := codec.Decompress(bodyMayCompressed, originalMsgSize)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		removeCompressHeader(ext)
-		return decompressed, err
+		return decompressed, true, err
 	} else {
-		return bodyMayCompressed, nil
+		return bodyMayCompressed, false, nil
 	}
 }
 
-//after a successful decompress, remove nsq compress codec key in header, before message process
-func removeCompressHeader(ext *MsgExt) {
+//after a successful decompress, remove NSQ_CLIENT_COMPRESS_HEADER_KEY and NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY
+//and build new json header with ext.Custom map
+func removeCompressHeader(msg *Message, ext *MsgExt) error {
+	//remove nsq compress codec key in header, before message process
 	delete(ext.Custom, NSQ_CLIENT_COMPRESS_HEADER_KEY)
 	delete(ext.Custom, NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY)
+	newExtJsonBytes, err := json.Marshal(ext.Custom)
+	if err != nil {
+		return err
+	}
+	msg.ExtBytes = newExtJsonBytes
+	return nil
 }

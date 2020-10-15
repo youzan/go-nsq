@@ -199,6 +199,101 @@ func (h *MyTestHandler) HandleMessage(message *Message) error {
 	return nil
 }
 
+type DecompressTestHandler struct {
+	t                *testing.T
+	q                *Consumer
+	messagesSent     int
+	messagesReceived int
+	messagesFailed   int
+	expectFailed     int
+	blockingTime     time.Duration
+}
+
+func (h *DecompressTestHandler) LogFailedMessage(message *Message) {
+	h.messagesFailed++
+	h.t.Logf("log fail message: %v, %v", h.messagesReceived, GetNewMessageID(message.ID[:]))
+	if h.messagesFailed >= h.expectFailed {
+		h.q.Stop()
+	}
+}
+
+func (h *DecompressTestHandler) HandleMessage(message *Message) error {
+	if string(message.Body) == "TOBEFAILED" {
+		h.messagesReceived++
+		h.t.Logf("received fail message: %v, %v", h.messagesReceived, GetNewMessageID(message.ID[:]))
+		return errors.New("fail this message")
+	}
+
+	body := message.Body[:]
+	if h.q.config.DisableMessageDecompress {
+		ext, err := message.GetJsonExt()
+		if err != nil {
+			h.t.Error("fail to get json ext header: ", message.ExtVer, string(message.ExtBytes))
+		}
+		//assert compress header
+		codecNumStr := ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY].(string)
+		if codecNumStr == "" {
+			h.t.Error("fail to get nsq compress key json ext header: ", codecNumStr)
+		}
+		msgSizeStr := ext.Custom[NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY].(string)
+		if msgSizeStr == "" {
+			h.t.Error("fail to get nsq compress key json ext header: ", NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY)
+		}
+
+		//decompress
+		codecNum, err := strconv.Atoi(codecNumStr)
+		if err != nil {
+			h.t.Error("fail to convert nsq compress key json ext header: ", codecNumStr)
+		}
+		codec, err := GetNSQClientCompressCodeByCodecNo(codecNum)
+		if err != nil {
+			h.t.Error("fail to get compress codec: ", codecNum)
+		}
+		msgSize, err := strconv.Atoi(msgSizeStr)
+		if err != nil {
+			h.t.Error("fail to parse message size: ", msgSizeStr)
+		}
+		body, err = codec.Decompress(body, msgSize)
+		if err != nil {
+			h.t.Error("fail to decompress message ", err)
+		}
+	} else {
+		//check there is NO nsq client compress ext keys
+		ext, err := message.GetJsonExt()
+		if err != nil {
+			h.t.Error("fail to get json ext header: ", message.ExtVer, string(message.ExtBytes))
+		}
+		//assert compress header
+		if _, ok := ext.Custom[NSQ_CLIENT_COMPRESS_HEADER_KEY]; ok {
+			h.t.Error("NSQ_CLIENT_COMPRESS_HEADER_KEY should NOT exist in decompressed message")
+		}
+		if _, ok := ext.Custom[NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY]; ok {
+			h.t.Error("NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY should NOT exist in decompressed message")
+		}
+	}
+
+	data := struct {
+		Msg string
+	}{}
+
+	err := json.Unmarshal(body, &data)
+	if err != nil {
+		return err
+	}
+
+	msg := data.Msg
+	if !strings.HasPrefix(msg,"this is a message for compress test") {
+		h.t.Error("message 'action' was not correct: ", msg, data)
+	}
+
+	h.messagesReceived++
+	h.t.Logf("received message: %v, %v", h.messagesReceived, GetNewMessageID(message.ID[:]))
+	if h.blockingTime > 0 && h.messagesReceived > 1 {
+		time.Sleep(h.blockingTime)
+	}
+	return nil
+}
+
 func EnsureTopicWithExt(t *testing.T, port int, topic string, part int, ext bool) {
 	endpoint := fmt.Sprintf("127.0.0.1:%d", port)
 	conn, err := net.DialTimeout("tcp", endpoint, 3*time.Second)
@@ -257,6 +352,22 @@ func SendMessage(t *testing.T, port int, topic string, method string, body []byt
 	httpclient := &http.Client{}
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/%s?topic=%s", port, method, topic)
 	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
+	resp, err := httpclient.Do(req)
+	if err != nil {
+		t.Fatalf(err.Error())
+		return
+	}
+	resp.Body.Close()
+}
+
+func SendCompressMessage(t *testing.T, port int, topic string, method string, body []byte, codecName string) {
+	codec, _ := GetNSQClientCompressCodec(codecName)
+	compressed, _ := codec.Compress(body)
+
+	httpclient := &http.Client{}
+	jsonStr := fmt.Sprintf("{\"%s\":\"%d\",\"%s\":\"%d\"}", NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY, len(body), NSQ_CLIENT_COMPRESS_HEADER_KEY, codec.GetCodecNo())
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/%s?topic=%s&ext=%s", port, method, topic, url.QueryEscape(jsonStr))
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(compressed))
 	resp, err := httpclient.Do(req)
 	if err != nil {
 		t.Fatalf(err.Error())
@@ -371,6 +482,104 @@ func TestConsumerSubToExtTopicLookupd(t *testing.T) {
 	consumerTagTestLookupd(t, func(c *Config) {
 		c.Set("desired_tag", "tagTest123")
 	})
+}
+
+func TestConsumerSubToExtTopicWithCompressedDisableMSGLookupd(t *testing.T) {
+	consumerCompressTestLookupd(t, func(c *Config) {
+		c.Set("disable_message_decompress", "true")
+	})
+}
+
+func TestConsumerSubToExtTopicWithCompressedMSGLookupd(t *testing.T) {
+	consumerCompressTestLookupd(t, func(c *Config) {
+		c.Set("disable_message_decompress", "false")
+	})
+}
+
+func consumerCompressTestLookupd(t *testing.T, cb func(c *Config)) {
+	lookupdAddrWrapper := "127.0.0.1:4162"
+	stopCh := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lookupdWrapper := NewNsqlookupdWrapper(t, "127.0.0.1:4161", metaInfo{
+			PartitionNum:  1,
+			Replica:       1,
+			ExtendSupport: true,
+		})
+
+		srvMux := http.NewServeMux()
+		srvMux.HandleFunc("/lookup", lookupdWrapper.lookupdWrap)
+		//http.ListenAndServe(lookupdAddrWrapper, nil)
+		l, err := net.Listen("tcp", lookupdAddrWrapper)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			select {
+			case <-stopCh:
+				l.Close()
+			}
+		}()
+		http.Serve(l, srvMux)
+	}()
+	<-time.After(2 * time.Second)
+	fmt.Printf("nsqlookupd starts.")
+
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+	// so that the test can simulate reaching max requeues and a call to LogFailedMessage
+	config.DefaultRequeueDelay = 0
+	config.MaxAttempts = 5
+	// so that the test wont timeout from backing off
+	config.MaxBackoffDuration = time.Millisecond * 50
+	if cb != nil {
+		cb(config)
+	}
+	config.LookupdPollInterval = time.Second
+	//rest desired tag to default
+	config.DesiredTag = ""
+	topicName := "rdr_compress_test_lookupd"
+
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	EnsureTopicWithExt(t, 4150, topicName, 0, true)
+
+	q, _ := NewConsumer(topicName, "ch", config)
+	q.SetConsumeExt(true)
+	q.SetLogger(newTestLogger(t), LogLevelDebug)
+
+	h := &DecompressTestHandler{
+		t:            t,
+		q:            q,
+		expectFailed: 0,
+	}
+	q.AddHandler(h)
+	q.ConnectToNSQD("127.0.0.1:4150", 0)
+
+	SendCompressMessage(t, 4151, topicName, "pub_ext", []byte(`{"msg":"this is a message for compress test. XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"}`), CompressDecodec_LZ4.CodecName)
+	SendMessage(t, 4151, topicName, "pub", []byte("TOBEFAILED"))
+
+	h.messagesSent = 2
+	h.expectFailed = 1
+
+	select {
+	case <-time.After(time.Second * 20):
+		t.Errorf("compressed consumer should stop after timeout")
+		q.Stop()
+	case <-q.StopChan:
+	}
+
+	if h.messagesReceived != h.messagesSent+h.messagesFailed*int(config.MaxAttempts-1) {
+		t.Fatalf("end of test. should have handled a diff number of messages (got %d, sent %d)", h.messagesReceived, h.messagesSent)
+	}
+	if h.messagesFailed != h.expectFailed {
+		t.Fatal("failed message not done")
+	}
+	close(stopCh)
+	wg.Wait()
 }
 
 func consumerTagTestLookupd(t *testing.T, cb func(c *Config)) {
