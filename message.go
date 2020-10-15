@@ -232,7 +232,10 @@ func DecodeMessage(b []byte) (*Message, error) {
 }
 
 // DecodeMessage deseralizes data (as []byte) and creates a new Message
-func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
+// b row bytes to decode
+// ext indicate whether decode message in ext format
+// disableDecompress indicate whether depress message bytes, when message is compressed
+func DecodeMessageWithExt(b []byte, ext bool, disableDecompress bool) (*Message, error) {
 	if len(b) < 10+MsgIDLength {
 		return nil, errors.New("not enough data to decode valid message")
 	}
@@ -271,7 +274,11 @@ func DecodeMessageWithExt(b []byte, ext bool) (*Message, error) {
 		if err != nil {
 			return nil, err
 		}
-		msg.Body, err = tryDecompress(b[pos:], json)
+		if disableDecompress {
+			msg.Body = b[pos:]
+		} else {
+			msg.Body, err = tryDecompress(b[pos:], json)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -309,8 +316,15 @@ func tryDecompress(bodyMayCompressed []byte, ext *MsgExt) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		removeCompressHeader(ext)
 		return decompressed, err
 	} else {
 		return bodyMayCompressed, nil
 	}
+}
+
+//after a successful decompress, remove nsq compress codec key in header, before message process
+func removeCompressHeader(ext *MsgExt) {
+	delete(ext.Custom, NSQ_CLIENT_COMPRESS_HEADER_KEY)
+	delete(ext.Custom, NSQ_CLIENT_COMPRESS_SIZE_HEADER_KEY)
 }

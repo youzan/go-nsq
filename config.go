@@ -205,6 +205,10 @@ type Config struct {
 	TopicsForCompress      []string `opt:"topics_for_compress"`
 	MessageSizeForCompress int      `opt:"message_size_for_compress" default:"20480"`
 	ClientCompressDecodec  string   `opt:"client_compress_decodec" default:"not_specified"`
+	//consumer will NOT try decompressing message when DisableMessageDecompress is true, even trough message is compressed
+	//by producer with go-nsq's ClientCompressDecodec. This config applies to situation when consumer do NOT worry about
+	//message content, like receiving compressed message from one topic and delivery to another.
+	DisableMessageDecompress	bool	`opt:"disable_message_decompress"`
 }
 
 // NewConfig returns a new default nsq configuration.
