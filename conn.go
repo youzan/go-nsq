@@ -550,7 +550,7 @@ func (c *Conn) readLoop() {
 		case FrameTypeResponse:
 			c.delegate.OnResponse(c, data)
 		case FrameTypeMessage:
-			msg, err := DecodeMessageWithExt(data, c.ext)
+			msg, err := DecodeMessageWithExt(data, c.ext, c.config.DisableMessageDecompress)
 			if err != nil {
 				c.log(LogLevelError, "IO error - %s", err)
 				c.delegate.OnIOError(c, err)
