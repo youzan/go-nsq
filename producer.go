@@ -1238,11 +1238,6 @@ func (self *TopicProducerMgr) getNextProducerAddrWithHash(partProducerInfo *Topi
 			return -1, ""
 		}
 
-		if self.config.Hasher == nil {
-			self.log(LogLevelError, "missing sharding key hasher")
-			return -1, ""
-		}
-
 		pid := int(hash) % partProducerInfo.meta.PartitionNum
 		addrInfo = partProducerInfo.getSpecificPartitionInfo(pid)
 		break
@@ -1428,7 +1423,7 @@ func (self *TopicProducerMgr) getProducerWithHash(topic string, hash uint32) (*P
 	if err != nil {
 		return nil, pid, err
 	}
-	return producer, pid, nil
+	return producer.getProducer(), pid, nil
 }
 
 func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*Producer, int, error) {
@@ -1478,6 +1473,43 @@ func (self *TopicProducerMgr) PublishAsyncWithJsonExt(topic string, body []byte,
 		}
 		return PublishWithJsonExt(topic, strconv.Itoa(pid), afterCompressed, ext.ToJson())
 	}, args)
+}
+
+func (self *TopicProducerMgr) XPublishAsyncRawBytes(pubCommand string, topic string, cmdByte []byte, doneChan chan *ProducerTransaction,
+	args ...interface{}) error {
+	afterCompressed := cmdByte
+	return self.doCommandAsyncWithRetry(topic, nil, doneChan, func(pid int) (*Command, error) {
+		if pid < 0 {
+			return nil, errors.New("pub need partition id")
+		}
+		var params = [][]byte{[]byte(topic), []byte(strconv.Itoa(pid))}
+		return &Command{[]byte(pubCommand), params, afterCompressed}, nil
+	}, args)
+}
+
+//invoke low API to publish async to nsq, with uint64 has partition hash key
+func (self *TopicProducerMgr) XPublishOrderAsyncWithPartitionHashRawBytes(pubCommand string, topic string, partitionHash uint32, cmdByte []byte, doneChan chan *ProducerTransaction,
+	args ...interface{}) error {
+	if !isPub(pubCommand) {
+		return errors.New(fmt.Sprintf("passin command %v is not a PUB", pubCommand))
+	}
+	afterCompressed := cmdByte
+	return self.doCommandAsyncWithRetryAndPartitionHash(topic, partitionHash, doneChan, func(pid int) (*Command, error) {
+		if pid < 0 {
+			return nil, errors.New("pub need partition id")
+		}
+		var params = [][]byte{[]byte(topic), []byte(strconv.Itoa(pid))}
+		return &Command{[]byte(pubCommand), params, afterCompressed}, nil
+	}, args)
+}
+
+func isPub(pubCommand string) bool {
+	switch pubCommand {
+	case "PUB","MPUB_EXT","MPUB","PUB_EXT":
+		return true
+	default:
+		return false
+	}
 }
 
 //publish async to nsq, with uint64 has partition hash key
