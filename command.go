@@ -178,6 +178,11 @@ func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Comm
 	return &Command{[]byte("PUB_TRACE"), params, buf.Bytes()}, nil
 }
 
+func MultiPublishWithJsonExtRawBytes(topic string, part string, payload []byte) (*Command, error) {
+	var params = [][]byte{[]byte(topic), []byte(part)}
+	return &Command{[]byte("MPUB_EXT"), params, payload}, nil
+}
+
 func PublishWithJsonExt(topic string, part string, body []byte, jsonExt []byte) (*Command, error) {
 	var params = [][]byte{[]byte(topic), []byte(part)}
 	if len(jsonExt) > math.MaxUint16 {
