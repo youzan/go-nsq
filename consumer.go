@@ -131,6 +131,7 @@ type Consumer struct {
 
 	rdyRetryMtx    sync.Mutex
 	rdyRetryTimers map[string]*time.Timer
+	rdyUpdateMtx   sync.Mutex
 
 	pendingConnections map[string]*Conn
 	connections        map[string]*Conn
@@ -958,9 +959,12 @@ func (r *Consumer) onConnIOError(c *Conn, err error) {
 func (r *Consumer) onConnClose(c *Conn) {
 	var hasRDYRetryTimer bool
 
+	r.rdyUpdateMtx.Lock()
 	// remove this connections RDY count from the consumer's total
 	rdyCount := c.RDY()
-	atomic.AddInt64(&r.totalRdyCount, -rdyCount)
+	newTotal := atomic.AddInt64(&r.totalRdyCount, -rdyCount)
+	r.log(LogLevelDebug, "closing conn sub %v rdy from total to new: %v", rdyCount, newTotal)
+	r.rdyUpdateMtx.Unlock()
 
 	r.rdyRetryMtx.Lock()
 	if timer, ok := r.rdyRetryTimers[c.GetConnUID()]; ok {
@@ -1272,20 +1276,24 @@ func (r *Consumer) updateRDY(c *Conn, count int64) error {
 	}
 	r.rdyRetryMtx.Unlock()
 
+	r.rdyUpdateMtx.Lock()
 	// never exceed our global max in flight. truncate if possible.
 	// this could help a new connection get partial max-in-flight
 	rdyCount := c.RDY()
-	maxPossibleRdy := int64(r.getMaxInFlight()) - atomic.LoadInt64(&r.totalRdyCount) + rdyCount
+	currentTotal := atomic.LoadInt64(&r.totalRdyCount)
+	maxPossibleRdy := int64(r.getMaxInFlight()) - currentTotal + rdyCount
 	if maxPossibleRdy > 0 && maxPossibleRdy < count {
 		count = maxPossibleRdy
 	}
-	r.log(LogLevelDebug, "try update ready from %v to: %v", rdyCount, count)
+	r.log(LogLevelDebug, "try update ready from %v to: %v, current total: %v",
+		rdyCount, count, currentTotal)
 	if maxPossibleRdy <= 0 && count > 0 {
+		r.rdyUpdateMtx.Unlock()
 		if rdyCount == 0 {
 			// we wanted to exit a zero RDY count but we couldn't send it...
 			// in order to prevent eternal starvation we reschedule this attempt
 			// (if any other RDY update succeeds this timer will be stopped)
-			r.log(LogLevelInfo, "try update ready from %v to: %v later", rdyCount, count)
+			r.log(LogLevelInfo, "try update ready from %v to: %v later, total: %v", rdyCount, count, currentTotal)
 			r.rdyRetryMtx.Lock()
 			r.rdyRetryTimers[c.GetConnUID()] = time.AfterFunc(5*time.Second,
 				func() {
@@ -1293,10 +1301,12 @@ func (r *Consumer) updateRDY(c *Conn, count int64) error {
 				})
 			r.rdyRetryMtx.Unlock()
 		}
-		r.log(LogLevelDebug, "try update ready from %v to: %v overflow inflight", rdyCount, count)
+		r.log(LogLevelDebug, "try update ready from %v to: %v overflow inflight, total %v",
+			rdyCount, count, currentTotal)
 		return ErrOverMaxInFlight
 	}
 
+	defer r.rdyUpdateMtx.Unlock()
 	return r.sendRDY(c, count)
 }
 
@@ -1306,8 +1316,10 @@ func (r *Consumer) sendRDY(c *Conn, count int64) error {
 		return nil
 	}
 
-	atomic.AddInt64(&r.totalRdyCount, count-c.RDY())
+	newTotal := atomic.AddInt64(&r.totalRdyCount, count-c.RDY())
 	c.SetRDY(count)
+	r.log(LogLevelDebug, "send ready %v, new total %v",
+		count, newTotal)
 	err := c.WriteCommand(Ready(int(count)))
 	if err != nil {
 		r.log(LogLevelError, "(%s) error sending RDY %d - %s", c.String(), count, err)
