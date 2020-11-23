@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"time"
 )
@@ -178,7 +179,7 @@ func PublishTrace(topic string, part string, traceID uint64, body []byte) (*Comm
 
 func PublishWithJsonExt(topic string, part string, body []byte, jsonExt []byte) (*Command, error) {
 	var params = [][]byte{[]byte(topic), []byte(part)}
-	if len(jsonExt) > 65535 {
+	if len(jsonExt) > math.MaxUint16 {
 		return nil, errCommandArg
 	}
 	hlen := uint16(len(jsonExt))
@@ -246,7 +247,7 @@ func getMPubBodyWithJsonExt(extList []*MsgExt, bodies [][]byte) (*bytes.Buffer, 
 	jsonExtBytesList := make([][]byte, num)
 	bodySize := 4
 	for i, b := range bodies {
-		extJsonBytes := extList[i].ToJson();
+		extJsonBytes := extList[i].ToJson()
 		jsonExtBytesList[i] = extJsonBytes
 		bodySize += len(b) + 4 + 2 + len(extJsonBytes)
 	}
@@ -259,7 +260,7 @@ func getMPubBodyWithJsonExt(extList []*MsgExt, bodies [][]byte) (*bytes.Buffer, 
 	}
 	for i, b := range bodies {
 		// the length should contain the body size + 8 bytes trace id.
-		err = binary.Write(buf, binary.BigEndian, int32(len(b) + 2 + len(jsonExtBytesList[i])))
+		err = binary.Write(buf, binary.BigEndian, int32(len(b)+2+len(jsonExtBytesList[i])))
 		if err != nil {
 			return nil, err
 		}
