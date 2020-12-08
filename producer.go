@@ -612,6 +612,8 @@ type backgroundCommand struct {
 type producerLoadComputer struct {
 	lastAvg    int64
 	pendingCnt int64
+	// this is used to avoid some large avg rt will never be get updated since no request will be send to this
+	avgResetLeft int64
 }
 
 func (rtc *producerLoadComputer) AddPending(c int64) {
@@ -624,6 +626,13 @@ func (rtc *producerLoadComputer) GetPending() int64 {
 
 func (rtc *producerLoadComputer) AddCost(c time.Duration) {
 	last := atomic.LoadInt64(&rtc.lastAvg)
+	atomic.StoreInt64(&rtc.avgResetLeft, 10)
+	if c > time.Second {
+		// avoid exception for avg
+		// too slow will cost the pending increase, which can avoid be chosen
+		// we only consider the rt while pending is not much
+		return
+	}
 	if last <= 0 {
 		atomic.StoreInt64(&rtc.lastAvg, c.Nanoseconds())
 	} else {
@@ -632,7 +641,15 @@ func (rtc *producerLoadComputer) AddCost(c time.Duration) {
 	}
 }
 
+func (rtc *producerLoadComputer) DecrLeftCount() {
+	atomic.AddInt64(&rtc.avgResetLeft, -1)
+}
+
 func (rtc *producerLoadComputer) GetCost() int64 {
+	left := atomic.LoadInt64(&rtc.avgResetLeft)
+	if left <= 0 {
+		return 0
+	}
 	return atomic.LoadInt64(&rtc.lastAvg)
 }
 
@@ -692,6 +709,10 @@ func (pp *producerPool) AvgPubRT() int64 {
 func (pp *producerPool) getProducer() *Producer {
 	i := atomic.AddUint64(&pp.index, 1)
 	return pp.producerList[i%uint64(len(pp.producerList))]
+}
+
+func (pp *producerPool) DecrLeftCount() {
+	pp.loadComputer.DecrLeftCount()
 }
 
 func (pp *producerPool) stopAll() {
@@ -1090,6 +1111,7 @@ func (self *TopicProducerMgr) lookupLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			self.refreshProducerAvgRt()
 			self.queryLookupd("")
 		case <-self.lookupdRecheckChan:
 			self.queryLookupd("")
@@ -1106,6 +1128,14 @@ func (self *TopicProducerMgr) lookupLoop() {
 			close(self.newTopicRspChan)
 			return
 		}
+	}
+}
+
+func (self *TopicProducerMgr) refreshProducerAvgRt() {
+	self.producerMtx.RLock()
+	defer self.producerMtx.RUnlock()
+	for _, p := range self.producers {
+		p.DecrLeftCount()
 	}
 }
 

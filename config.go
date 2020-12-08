@@ -188,7 +188,7 @@ type Config struct {
 	EnableTrace    bool `opt:"enable_trace"`
 	EnableOrdered  bool `opt:"enable_ordered"`
 	Hasher         hash.Hash32
-	PubStrategy    int `opt:"pub_strategy" default:"1"`
+	PubStrategy    int `opt:"pub_strategy" default:"0"`
 	// pub will retry max retry times and each retry will wait pub timeout
 	PubMaxRetry           int `opt:"pub_max_retry" min:"1" max:"15" default:"3"`
 	PubMaxBackgroundRetry int `opt:"pub_max_background_retry" min:"1" max:"100" default:"15"`
@@ -208,7 +208,7 @@ type Config struct {
 	//consumer will NOT try decompressing message when DisableMessageDecompress is true, even trough message is compressed
 	//by producer with go-nsq's ClientCompressDecodec. This config applies to situation when consumer do NOT worry about
 	//message content, like receiving compressed message from one topic and delivery to another.
-	DisableMessageDecompress	bool	`opt:"disable_message_decompress"`
+	DisableMessageDecompress bool `opt:"disable_message_decompress"`
 }
 
 // NewConfig returns a new default nsq configuration.

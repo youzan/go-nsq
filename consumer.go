@@ -1496,7 +1496,7 @@ func (r *Consumer) handlerFuncLoop(handlerFunc HandlerFunc, failedFunc FailHandl
 
 		err := handlerFunc(message)
 		if err != nil {
-			r.log(LogLevelError, "Handler returned error (%s) for msg %s", err, message.ID)
+			r.log(LogLevelWarning, "Handler returned error (%s) for msg %v, attempts: %v", err, message.ID, message.Attempts)
 			if !message.IsAutoResponseDisabled() {
 				message.Requeue(-1)
 			}
