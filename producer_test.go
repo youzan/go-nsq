@@ -519,6 +519,110 @@ func TestTopicProducerMgrGetNextProducer(t *testing.T) {
 	}
 }
 
+func TestGetNextProducerForExceptionAvgRT(t *testing.T) {
+	config := NewConfig()
+	config.ProducerPoolSize = 1
+	topicList := make([]string, 0)
+	initTopics := make([]string, 0)
+	initTopics = topicList
+	config.PubStrategy = int(PubDynamicLoad)
+	w, err := NewTopicProducerMgr(initTopics, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	partProducerInfo := &TopicPartProducerInfo{}
+	w.producers = make(map[string]*producerPool)
+	addr1, err := newProducerPool("addr1", config)
+	assert.Nil(t, err)
+	addr1.loadComputer.AddCost(time.Millisecond * 100)
+	addr1.loadComputer.AddCost(time.Millisecond * 100)
+	w.producers["addr1"] = addr1
+	addr1.loadComputer.AddPending(1)
+
+	addr2, err := newProducerPool("addr2", config)
+	assert.Nil(t, err)
+	w.producers["addr2"] = addr2
+	partProducerInfo.allPartitions = append(partProducerInfo.allPartitions, AddrPartInfo{addr: "addr1", pid: 0}, AddrPartInfo{addr: "addr2", pid: 1})
+	pp, pid, err := w.getNextProducer(partProducerInfo, nil)
+	assert.Nil(t, err)
+	assert.Equal(t, 1, pid)
+	assert.Equal(t, addr2.addr, pp.addr)
+	pp.AddPubCost(time.Millisecond)
+	pp.pubLoad.AddPending(1)
+	addr1.loadComputer.AddPending(-1)
+	pp2, pid2, err := w.getNextProducer(partProducerInfo, nil)
+	assert.Nil(t, err)
+	assert.Equal(t, 0, pid2)
+	assert.Equal(t, addr1.addr, pp2.addr)
+	pp2, pid2, err = w.getNextProducer(partProducerInfo, nil)
+	assert.Nil(t, err)
+	assert.Equal(t, 0, pid2)
+	assert.Equal(t, addr1.addr, pp2.addr)
+	pp.pubLoad.AddPending(-1)
+	pp, pid, err = w.getNextProducer(partProducerInfo, nil)
+	assert.Nil(t, err)
+	assert.Equal(t, 1, pid)
+	assert.Equal(t, addr2.addr, pp.addr)
+
+	cnt1 := 0
+	cnt2 := 0
+	for i := 0; i < 9; i++ {
+		w.refreshProducerAvgRt()
+		pp, pid, err = w.getNextProducer(partProducerInfo, nil)
+		assert.Nil(t, err)
+		if pp.addr == addr1.addr {
+			cnt1++
+			assert.Equal(t, 0, pid)
+		} else if pp.addr == addr2.addr {
+			cnt2++
+			assert.Equal(t, 1, pid)
+		}
+		pp.AddPubCost(time.Millisecond)
+	}
+	t.Logf("choose: %v, %v", cnt1, cnt2)
+	assert.InDelta(t, cnt1, cnt2, 1)
+	addr1.loadComputer.AddCost(time.Millisecond * 100)
+	addr1.loadComputer.AddPending(2)
+	addr2.loadComputer.AddPending(2)
+	pp, pid, err = w.getNextProducer(partProducerInfo, nil)
+	assert.Nil(t, err)
+	assert.Equal(t, 1, pid)
+	assert.Equal(t, addr2.addr, pp.addr)
+	for i := 0; i < 9; i++ {
+		w.refreshProducerAvgRt()
+		pp, pid, err = w.getNextProducer(partProducerInfo, nil)
+		assert.Nil(t, err)
+		assert.Equal(t, 1, pid)
+		assert.Equal(t, addr2.addr, pp.addr)
+		pp.AddPubCost(time.Millisecond)
+	}
+	w.refreshProducerAvgRt()
+	pp2, pid2, err = w.getNextProducer(partProducerInfo, nil)
+	assert.Nil(t, err)
+	assert.Equal(t, 0, pid2)
+	assert.Equal(t, addr1.addr, pp2.addr)
+	pp2.AddPubCost(time.Millisecond)
+	// avg become normal, should choose one by one
+	cnt1 = 0
+	cnt2 = 0
+	for i := 0; i < 9; i++ {
+		w.refreshProducerAvgRt()
+		pp, pid, err = w.getNextProducer(partProducerInfo, nil)
+		assert.Nil(t, err)
+		if pp.addr == addr1.addr {
+			cnt1++
+			assert.Equal(t, 0, pid)
+		} else if pp.addr == addr2.addr {
+			cnt2++
+			assert.Equal(t, 1, pid)
+		}
+		pp.AddPubCost(time.Millisecond)
+	}
+	t.Logf("choose: %v, %v", cnt1, cnt2)
+	assert.InDelta(t, cnt1, cnt2, 1)
+}
+
 func TestTopicProducerMgrGetNextProducerForDynamicLoad(t *testing.T) {
 	topicName := "topic_producer_mgr_publish" + strconv.Itoa(int(time.Now().Unix()))
 	msgCount := 10

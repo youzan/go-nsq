@@ -627,7 +627,7 @@ func (rtc *producerLoadComputer) GetPending() int64 {
 func (rtc *producerLoadComputer) AddCost(c time.Duration) {
 	last := atomic.LoadInt64(&rtc.lastAvg)
 	atomic.StoreInt64(&rtc.avgResetLeft, 10)
-	if c > time.Second {
+	if c >= time.Second {
 		// avoid exception for avg
 		// too slow will cost the pending increase, which can avoid be chosen
 		// we only consider the rt while pending is not much
@@ -648,6 +648,7 @@ func (rtc *producerLoadComputer) DecrLeftCount() {
 func (rtc *producerLoadComputer) GetCost() int64 {
 	left := atomic.LoadInt64(&rtc.avgResetLeft)
 	if left <= 0 {
+		atomic.StoreInt64(&rtc.lastAvg, 0)
 		return 0
 	}
 	return atomic.LoadInt64(&rtc.lastAvg)
@@ -691,6 +692,10 @@ func (pp *producerPool) IsLessLoad(other *producerPool) bool {
 	if pp.Pending() < other.Pending() {
 		return true
 	} else if pp.Pending() == other.Pending() {
+		// for small pending, we always choose the first to keep rr strategy
+		if pp.Pending() <= 1 {
+			return true
+		}
 		if pp.AvgPubRT() < other.AvgPubRT() {
 			return true
 		}
