@@ -1225,6 +1225,31 @@ func (self *TopicProducerMgr) getNextProducer(partProducerInfo *TopicPartProduce
 	return nil, addrInfo.pid, errors.New("no available producer")
 }
 
+func (self *TopicProducerMgr) getNextProducerAddrWithHash(partProducerInfo *TopicPartProducerInfo, hash uint32) (int, string) {
+	addrInfo := AddrPartInfo{"", -1}
+	length := len(partProducerInfo.allPartitions)
+	if length == 0 {
+		return -1, ""
+	}
+
+	for addrInfo.addr == "" {
+		if !partProducerInfo.isMetaValid || partProducerInfo.meta.PartitionNum <= 0 {
+			self.log(LogLevelError, "partition meta info invalid: %v", partProducerInfo.meta)
+			return -1, ""
+		}
+
+		if self.config.Hasher == nil {
+			self.log(LogLevelError, "missing sharding key hasher")
+			return -1, ""
+		}
+
+		pid := int(hash) % partProducerInfo.meta.PartitionNum
+		addrInfo = partProducerInfo.getSpecificPartitionInfo(pid)
+		break
+	}
+	return addrInfo.pid, addrInfo.addr
+}
+
 func (self *TopicProducerMgr) removeProducerForTopic(topic string, pid int, addr string) {
 	self.log(LogLevelInfo, "removing producer %v for topic %v-%v ", addr, topic, pid)
 	self.topicMtx.Lock()
@@ -1392,6 +1417,20 @@ func (self *TopicProducerMgr) getProducerFromAddr(addr string) (*producerPool, e
 	return producer, nil
 }
 
+func (self *TopicProducerMgr) getProducerWithHash(topic string, hash uint32) (*Producer, int, error) {
+	partProducerInfo, err := self.getPartitionProducerInfo(topic)
+	if err != nil {
+		return nil, -1, err
+	}
+	pid, addr := self.getNextProducerAddrWithHash(partProducerInfo, hash)
+	self.log(LogLevelDebug, "choosing %v producer: %v, %v", topic, pid, addr)
+	producer, err := self.getProducerFromAddr(addr)
+	if err != nil {
+		return nil, pid, err
+	}
+	return producer, pid, nil
+}
+
 func (self *TopicProducerMgr) getProducer(topic string, partitionKey []byte) (*Producer, int, error) {
 	partProducerInfo, err := self.getPartitionProducerInfo(topic)
 	if err != nil {
@@ -1441,6 +1480,18 @@ func (self *TopicProducerMgr) PublishAsyncWithJsonExt(topic string, body []byte,
 	}, args)
 }
 
+//publish async to nsq, with uint64 has partition hash key
+func (self *TopicProducerMgr) PublishOrderAsyncWithJsonExtAndPartitionHash(topic string, partitionHash uint32, body []byte, ext *MsgExt, doneChan chan *ProducerTransaction,
+	args ...interface{}) error {
+	afterCompressed := self.compress(topic, body, ext)
+	return self.doCommandAsyncWithRetryAndPartitionHash(topic, partitionHash, doneChan, func(pid int) (*Command, error) {
+		if pid < 0 {
+			return nil, errors.New("pub need partition id")
+		}
+		return PublishWithJsonExt(topic, strconv.Itoa(pid), afterCompressed, ext.ToJson())
+	}, args)
+}
+
 func (self *TopicProducerMgr) MultiPublishAsync(topic string, body [][]byte, doneChan chan *ProducerTransaction,
 	args ...interface{}) error {
 	return self.doCommandAsyncWithRetry(topic, nil, doneChan, func(pid int) (*Command, error) {
@@ -1469,6 +1520,19 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetryAndPart(topic string, part 
 		args)
 }
 
+func (self *TopicProducerMgr) doCommandAsyncWithRetryAndPartitionHash(topic string, hash uint32,
+	doneChan chan *ProducerTransaction,
+	commandFunc CmdFuncT, args []interface{}) error {
+	ctx := context.Background()
+	if self.config.PubTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, self.config.PubTimeout)
+		defer cancel()
+	}
+	return self.doCommandAsyncWithRetryAndContextAndPartitionHash(ctx, topic, hash,
+		doneChan, commandFunc, args)
+}
+
 func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, partitionKey []byte,
 	doneChan chan *ProducerTransaction,
 	commandFunc CmdFuncT, args []interface{}) error {
@@ -1480,6 +1544,17 @@ func (self *TopicProducerMgr) doCommandAsyncWithRetry(topic string, partitionKey
 	}
 	return self.doCommandAsyncWithRetryAndContext(ctx, topic, partitionKey,
 		doneChan, commandFunc, args)
+}
+
+func (self *TopicProducerMgr) doCommandAsyncWithRetryAndContextAndPartitionHash(ctx context.Context, topic string, hash uint32,
+	doneChan chan *ProducerTransaction,
+	commandFunc CmdFuncT, args []interface{}) error {
+	return self.doCommandAsyncWithRetryAndContextTemplate(ctx, topic, doneChan,
+		commandFunc,
+		func() (*Producer, int, error) {
+			return self.getProducerWithHash(topic, hash)
+		},
+		args)
 }
 
 func (self *TopicProducerMgr) doCommandAsyncWithRetryAndContext(ctx context.Context, topic string, partitionKey []byte,

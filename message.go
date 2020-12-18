@@ -58,6 +58,8 @@ type Message struct {
 
 	ExtVer   uint8
 	ExtBytes []byte
+
+	ClusterId string
 }
 
 // NewMessage creates a Message, initializes some metadata,

@@ -167,13 +167,13 @@ func TestProducerPing(t *testing.T) {
 }
 
 func TestProducerPublish(t *testing.T) {
-	topicName := "publish" + strconv.Itoa(int(time.Now().Unix()))
-	msgCount := 10
-	EnsureTopic(t, 4150, topicName, 0)
-	ensureInitChannel(t, topicName, false)
+	topicName := "pub_test"
+	msgCount := 10000
+	// EnsureTopic(t, 4150, topicName, 0)
+	// ensureInitChannel(t, topicName, false)
 
 	config := NewConfig()
-	w, _ := NewProducer("127.0.0.1:4150", config)
+	w, _ := NewProducer("127.0.0.1:4155", config)
 	w.SetLogger(nullLogger, LogLevelInfo)
 	defer w.Stop()
 
