@@ -65,6 +65,7 @@ type Conn struct {
 
 	config *Config
 
+	fdId        string
 	conn        *net.TCPConn
 	tlsConn     *tls.Conn
 	addr        string
@@ -185,6 +186,12 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 			return nil, err
 		}
 	}
+
+	file, err := c.conn.File()
+	if err != nil {
+		return nil, fmt.Errorf("[%s] failed to get file of conn - %s", c.addr, err)
+	}
+	c.fdId = fmt.Sprintf("%v", file.Fd())
 
 	c.wg.Add(2)
 	atomic.StoreInt32(&c.readLoopRunning, 1)
@@ -355,6 +362,10 @@ func (c *Conn) identify() (*IdentifyResponse, error) {
 	ci["desired_tag"] = c.config.DesiredTag
 	if c.ext {
 		ci["extend_support"] = true
+	}
+
+	if c.config.TenantRequired {
+		ci["tenant"] = c.config.tenant
 	}
 
 	cmd, err := Identify(ci)
@@ -566,6 +577,7 @@ func (c *Conn) readLoop() {
 			msg.Delegate = delegate
 			msg.NSQDAddress = c.String()
 			msg.Partition = c.consumePart
+			msg.ClusterId = c.fdId
 
 			atomic.AddInt64(&c.messagesInFlight, 1)
 			atomic.StoreInt64(&c.lastMsgTimestamp, time.Now().UnixNano())
@@ -750,9 +762,24 @@ func (c *Conn) waitForCleanup() {
 	c.delegate.OnClose(c)
 }
 
+func getClusterID(m *Message) string {
+	var clusterID string
+	if ext, err := m.GetJsonExt(); err == nil {
+		clusterID = ext.Custom[clusterIDKey].(string)
+	}
+	return clusterID
+}
+
 func (c *Conn) onMessageFinish(m *Message) {
+	var cmd *Command
+	clusterID := getClusterID(m)
+	if clusterID != "" {
+		cmd = FinishProxy(m.ID, clusterID)
+	} else {
+		cmd = Finish(m.ID)
+	}
 	select {
-	case c.msgResponseChan <- &msgResponse{msg: m, cmd: Finish(m.ID), success: true}:
+	case c.msgResponseChan <- &msgResponse{msg: m, cmd: cmd, success: true}:
 	case <-c.exitChan:
 		atomic.AddInt64(&c.messagesInFlight, -1)
 		c.log(LogLevelInfo, "finish %v ignored while exit", m)
@@ -768,18 +795,32 @@ func (c *Conn) onMessageRequeue(m *Message, delay time.Duration, backoff bool, c
 			delay = c.config.MaxRequeueDelay
 		}
 	}
+
+	var cmd *Command
+	clusterID := getClusterID(m)
+	if clusterID != "" {
+		cmd = RequeueProxy(m.ID, delay, clusterID)
+	} else {
+		cmd = Requeue(m.ID, delay)
+	}
 	select {
-	case c.msgResponseChan <- &msgResponse{msg: m, cmd: Requeue(m.ID, delay), success: false, backoff: backoff, connOnly: connOnly}:
+	case c.msgResponseChan <- &msgResponse{msg: m, cmd: cmd, success: false, backoff: backoff, connOnly: connOnly}:
 	case <-c.exitChan:
 		atomic.AddInt64(&c.messagesInFlight, -1)
 		c.log(LogLevelInfo, "req %v ignored while exit", m)
 	}
-
 }
 
 func (c *Conn) onMessageTouch(m *Message) {
+	var cmd *Command
+	clusterID := getClusterID(m)
+	if clusterID != "" {
+		cmd = TouchProxy(m.ID, clusterID)
+	} else {
+		cmd = Touch(m.ID)
+	}
 	select {
-	case c.cmdChan <- Touch(m.ID):
+	case c.cmdChan <- cmd:
 	case <-c.exitChan:
 	}
 }

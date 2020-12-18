@@ -18,6 +18,7 @@ var byteNewLine = []byte("\n")
 const (
 	traceIDExtK     = "##trace_id"
 	dispatchTagExtK = "##client_dispatch_tag"
+	clusterIDKey    = "##nsq_cluster_id"
 )
 
 var (
@@ -467,6 +468,11 @@ func Finish(id MessageID) *Command {
 	return &Command{[]byte("FIN"), params, nil}
 }
 
+func FinishProxy(id MessageID, clusterID string) *Command {
+	var params = [][]byte{id[:], []byte(clusterID)}
+	return &Command{[]byte("FIN_P"), params, nil}
+}
+
 // Requeue creates a new Command to indicate that
 // a given message (by id) should be requeued after the given delay
 // NOTE: a delay of 0 indicates immediate requeue
@@ -475,11 +481,21 @@ func Requeue(id MessageID, delay time.Duration) *Command {
 	return &Command{[]byte("REQ"), params, nil}
 }
 
+func RequeueProxy(id MessageID, delay time.Duration, clusterID string) *Command {
+	var params = [][]byte{id[:], []byte(strconv.Itoa(int(delay / time.Millisecond))), []byte(clusterID)}
+	return &Command{[]byte("REQ_P"), params, nil}
+}
+
 // Touch creates a new Command to reset the timeout for
 // a given message (by id)
 func Touch(id MessageID) *Command {
 	var params = [][]byte{id[:]}
 	return &Command{[]byte("TOUCH"), params, nil}
+}
+
+func TouchProxy(id MessageID, clusterID string) *Command {
+	var params = [][]byte{id[:], []byte(clusterID)}
+	return &Command{[]byte("TOUCH_P"), params, nil}
 }
 
 // StartClose creates a new Command to indicate that the

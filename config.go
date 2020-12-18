@@ -209,6 +209,9 @@ type Config struct {
 	//by producer with go-nsq's ClientCompressDecodec. This config applies to situation when consumer do NOT worry about
 	//message content, like receiving compressed message from one topic and delivery to another.
 	DisableMessageDecompress bool `opt:"disable_message_decompress"`
+	TenantRequired           bool `opt:"tenant_required" default:"false"`
+
+	tenant *Tenant
 	EnableConsumerLookupCache bool `opt:"enable_consumer_lookup_cache"`
 }
 
@@ -413,6 +416,32 @@ func (h *structTagsConfig) Validate(c *Config) error {
 		return fmt.Errorf("HeartbeatInterval %v must be less than ReadTimeout %v", c.HeartbeatInterval, c.ReadTimeout)
 	}
 
+	return nil
+}
+
+type tenantConfig struct {
+}
+
+func (t *tenantConfig) HandlesOption(c *Config, option string) bool {
+	switch option {
+	case "tls_root_ca_file", "tls_insecure_skip_verify", "tls_cert", "tls_key", "tls_min_version":
+		return true
+	}
+	return false
+}
+
+func (t *tenantConfig) Set(c *Config, option string, value interface{}) error {
+	return nil
+}
+
+func (t *tenantConfig) Validate(c *Config) error {
+	if c.TenantRequired {
+		t, err := buildTenant()
+		if err != nil {
+			return err
+		}
+		c.tenant = t
+	}
 	return nil
 }
 

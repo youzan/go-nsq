@@ -248,6 +248,17 @@ func (r *Consumer) Stats() *ConsumerStats {
 	}
 }
 
+// Snapshot mapping of nsqd connections
+func (r *Consumer) FidToConnsMap() map[string]*Conn {
+	conns := make(map[string]*Conn)
+	r.mtx.RLock()
+	for _, c := range r.connections {
+		conns[c.fdId] = c
+	}
+	r.mtx.RUnlock()
+	return conns
+}
+
 func (r *Consumer) conns() []*Conn {
 	r.mtx.RLock()
 	conns := make([]*Conn, 0, len(r.connections))
