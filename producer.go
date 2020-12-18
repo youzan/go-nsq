@@ -425,6 +425,10 @@ exit:
 }
 
 func (w *Producer) popTransaction(frameType int32, data []byte) {
+	if len(w.transactions) == 0 {
+		w.log(LogLevelWarning, "receive message response has no waiting transaction")
+		return
+	}
 	t := w.transactions[0]
 	if w.pubLoad != nil {
 		w.pubLoad.AddPending(-1)
