@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/golang/snappy"
@@ -191,8 +192,12 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("[%s] failed to get file of conn - %s", c.addr, err)
 	}
+	//hack by setting non block again
 	c.fdId = fmt.Sprintf("%v", file.Fd())
-
+	err = syscall.SetNonblock(int(file.Fd()), true)
+	if err != nil {
+		return nil, fmt.Errorf("[%s] fail to set con to non block - %s", c.addr, err)
+	}
 	c.wg.Add(2)
 	atomic.StoreInt32(&c.readLoopRunning, 1)
 	go c.readLoop()
