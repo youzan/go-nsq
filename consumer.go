@@ -1496,8 +1496,10 @@ func (r *Consumer) handlerFuncLoop(handlerFunc HandlerFunc, failedFunc FailHandl
 
 		err := handlerFunc(message)
 		if err != nil {
-			r.log(LogLevelWarning, "Handler returned error (%s) for msg %v, attempts: %v", err, message.ID, message.Attempts)
+			r.log(LogLevelDebug, "Handler returned error (%s) for msg %v, attempts: %v", err, message.ID, message.Attempts)
+			// if handler disabled auto response, it means the error is handled, so we avoid log too much for this case
 			if !message.IsAutoResponseDisabled() {
+				r.log(LogLevelInfo, "Handler returned error (%s) for msg %v, attempts: %v", err, message.ID, message.Attempts)
 				message.Requeue(-1)
 			}
 			continue
