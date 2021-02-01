@@ -167,7 +167,6 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 
 	_, err = c.Write(MagicV2)
 	if err != nil {
-		c.close()
 		return nil, fmt.Errorf("[%s] failed to write magic - %s", c.addr, err)
 	}
 

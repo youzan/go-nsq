@@ -783,7 +783,7 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	}
 	r.offsetMutex.Unlock()
 
-	if part == -1 || part == OLD_VERSION_PID {
+	if part == OLD_VERSION_PID {
 		if hasConsumeOffset || r.config.EnableOrdered {
 			r.log(LogLevelError, "partition must be given for ordered consumer ")
 			return errors.New("missing partition for ordered consumer")
