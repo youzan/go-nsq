@@ -1483,9 +1483,6 @@ func (self *TopicProducerMgr) XPublishAsyncRawBytes(pubCommand string, topic str
 	args ...interface{}) error {
 	afterCompressed := cmdByte
 	return self.doCommandAsyncWithRetry(topic, nil, doneChan, func(pid int) (*Command, error) {
-		if pid < 0 {
-			return nil, errors.New("pub need partition id")
-		}
 		var params = [][]byte{[]byte(topic), []byte(strconv.Itoa(pid))}
 		return &Command{[]byte(pubCommand), params, afterCompressed}, nil
 	}, args)
