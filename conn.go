@@ -733,7 +733,9 @@ func (c *Conn) waitForCleanup() {
 	// this blocks until readLoop and writeLoop
 	// (and cleanup goroutine above) have exited
 	c.wg.Wait()
-	c.conn.CloseWrite()
+	// close write will not close fd directly, it will wait gc for non-reference and do the finalizer to close fd.
+	// We use close here to make sure the underlying fd is closed even some reference on it
+	c.conn.Close()
 	c.log(LogLevelInfo, "clean close complete")
 	c.delegate.OnClose(c)
 }
