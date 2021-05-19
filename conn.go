@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/golang/snappy"
@@ -22,6 +21,7 @@ import (
 
 var (
 	maxCleanupWaiting = time.Minute
+	ClusterIDGen int64 = 0
 )
 
 // IdentifyResponse represents the metadata
@@ -187,13 +187,14 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 		}
 	}
 
-	file, err := c.conn.File()
-	if err != nil {
-		return nil, fmt.Errorf("[%s] failed to get file of conn - %s", c.addr, err)
-	}
+	cid := atomic.AddInt64(&ClusterIDGen, 1)
+	//file, err := c.conn.File()
+	//if err != nil {
+	//	return nil, fmt.Errorf("[%s] failed to get file of conn - %s", c.addr, err)
+	//}
 	//hack by setting non block again
-	c.fdId = fmt.Sprintf("%v", file.Fd())
-	err = syscall.SetNonblock(int(file.Fd()), true)
+	c.fdId = fmt.Sprintf("%d", cid)
+	//err = syscall.SetNonblock(int(file.Fd()), true)
 	if err != nil {
 		return nil, fmt.Errorf("[%s] fail to set con to non block - %s", c.addr, err)
 	}
