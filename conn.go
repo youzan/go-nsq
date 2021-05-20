@@ -98,7 +98,7 @@ func NewConn(addr string, config *Config, delegate ConnDelegate) *Conn {
 	if !config.initialized {
 		panic("Config must be created with NewConfig()")
 	}
-	return &Conn{
+	c := &Conn{
 		addr: addr,
 
 		config:   config,
@@ -112,6 +112,8 @@ func NewConn(addr string, config *Config, delegate ConnDelegate) *Conn {
 		exitChan:        make(chan int),
 		drainReady:      make(chan int),
 	}
+	close(c.drainReady)
+	return c
 }
 
 // SetLogger assigns the logger to use as well as a level.
@@ -187,6 +189,8 @@ func (c *Conn) Connect() (*IdentifyResponse, error) {
 	c.wg.Add(2)
 	atomic.StoreInt32(&c.readLoopRunning, 1)
 	go c.readLoop()
+	//re-initialze drainRedy ch before start writeloop
+	c.drainReady = make(chan int)
 	go c.writeLoop()
 	return resp, nil
 }
@@ -255,7 +259,10 @@ func (c *Conn) LastMessageTime() time.Time {
 
 // RemoteAddr returns the configured destination nsqd address
 func (c *Conn) RemoteAddr() net.Addr {
-	return c.conn.RemoteAddr()
+	if c.conn != nil {
+		return c.conn.RemoteAddr()
+	}
+	return nil
 }
 
 // String returns the fully-qualified address
@@ -670,6 +677,7 @@ func (c *Conn) close() {
 	//
 	c.stopper.Do(func() {
 		c.log(LogLevelInfo, "beginning close")
+
 		close(c.exitChan)
 		atomic.StoreInt32(&c.closeFlag, 1)
 		if c.conn != nil {
@@ -735,7 +743,9 @@ func (c *Conn) waitForCleanup() {
 	c.wg.Wait()
 	// close write will not close fd directly, it will wait gc for non-reference and do the finalizer to close fd.
 	// We use close here to make sure the underlying fd is closed even some reference on it
-	c.conn.Close()
+	if c.conn != nil {
+		c.conn.Close()
+	}
 	c.log(LogLevelInfo, "clean close complete")
 	c.delegate.OnClose(c)
 }

@@ -1160,3 +1160,59 @@ func TestConsumerBlockingOnHandlerWhileConnClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestConnConnectFailed(t *testing.T) {
+	addr := "123.0.0.1:4150"
+
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+	// so that the test can simulate reaching max requeues and a call to LogFailedMessage
+	config.DefaultRequeueDelay = 0
+	// so that the test wont timeout from backing off
+	config.MaxBackoffDuration = time.Millisecond * 50
+	config.MaxAttempts = 7
+	config.LookupdPollInterval = time.Second
+	config.MsgTimeout = time.Minute
+
+	q, _ := NewConsumer("rdr_conn_fail", "ch", config)
+
+	conn := NewConn(addr, config, &consumerConnDelegate{q})
+	_, err := conn.Connect()
+	if err == nil {
+		t.Fatal("connect to invalid nsqd should fail")
+	}
+	//validate drain ready should be closed
+	_, more := <- conn.drainReady
+	if more {
+		t.Fatal("Conn#drainReady ch should be closed upon connect failure")
+	}
+
+	//try with a nsqd
+	addr = "127.0.0.1:4150"
+
+	conn = NewConn(addr, config, &consumerConnDelegate{q})
+	ir, err := conn.Connect()
+	if err != nil || ir == nil {
+		t.Fatal("connect to nsqd should succeed")
+	}
+	if conn.drainReady == nil {
+		t.Fatal("drain ready should be re initialized")
+	}
+	//close should not block
+	conn.close()
+
+	//validate drain ready should be open
+	timer := time.NewTimer(5 * time.Second)
+	select {
+	case _, more = <- conn.drainReady:
+	case <- timer.C:
+		t.Fatal("timeout wait for dearyDrain to be closed in writeloop")
+	}
+
+	if more {
+		t.Fatal("Conn#drainReady ch should be closed upon connect failure")
+	}
+
+}
