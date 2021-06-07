@@ -282,7 +282,7 @@ func (h *DecompressTestHandler) HandleMessage(message *Message) error {
 	}
 
 	msg := data.Msg
-	if !strings.HasPrefix(msg,"this is a message for compress test") {
+	if !strings.HasPrefix(msg, "this is a message for compress test") {
 		h.t.Error("message 'action' was not correct: ", msg, data)
 	}
 
@@ -1158,5 +1158,92 @@ func TestConsumerBlockingOnHandlerWhileConnClosed(t *testing.T) {
 			t.Errorf("timeout wait")
 			break
 		}
+	}
+}
+
+func TestConsumerConnectFailedShouldCleanConn(t *testing.T) {
+	maxCleanupWaiting = time.Second * 10
+	maxStopWaiting = time.Second * 5
+	// block handler and test the consumer call r.exit() early before the handler returned
+	// block handler and test finish after the conn cleanup
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+
+	topicName := "rdr_test_connfailed"
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	q, _ := NewConsumer(topicName, "ch", config)
+
+	q.SetLogger(newTestLogger(t), LogLevelDebug)
+
+	h := &MyTestHandler{
+		t:            t,
+		q:            q,
+		expectFailed: 1,
+		blockingTime: time.Second * 15,
+	}
+	q.AddHandler(h)
+
+	addr := "127.0.0.1:4150"
+	err := q.ConnectToNSQD(addr, 0)
+	if err == nil {
+		t.Errorf("should connect failed")
+	}
+
+	stats := q.Stats()
+	if stats.Connections > 0 {
+		t.Errorf("stats report connections (should be  0), %v", stats)
+	}
+	time.Sleep(time.Second)
+	q.Stop()
+	select {
+	case <-q.StopChan:
+	case <-time.After(h.blockingTime):
+		t.Errorf("should stop after timeout")
+	}
+	time.Sleep(time.Second * 2)
+}
+
+type testConnDelegate struct {
+	OnClosed int32
+}
+
+func (d *testConnDelegate) OnResponse(c *Conn, data []byte)       {}
+func (d *testConnDelegate) OnError(c *Conn, data []byte)          {}
+func (d *testConnDelegate) OnMessage(c *Conn, m *Message)         {}
+func (d *testConnDelegate) OnMessageFinished(c *Conn, m *Message) {}
+func (d *testConnDelegate) OnMessageRequeued(c *Conn, m *Message) {}
+func (d *testConnDelegate) OnBackoff(c *Conn, connOnly bool)      {}
+func (d *testConnDelegate) OnContinue(c *Conn)                    {}
+func (d *testConnDelegate) OnResume(c *Conn)                      {}
+func (d *testConnDelegate) OnIOError(c *Conn, err error)          {}
+func (d *testConnDelegate) OnHeartbeat(c *Conn)                   {}
+func (d *testConnDelegate) OnClose(c *Conn) {
+	atomic.StoreInt32(&d.OnClosed, 1)
+}
+
+func TestConnConnectFailedShouldCleanConn(t *testing.T) {
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+
+	topicName := "rdr_test_connfailed"
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	testDelegate := &testConnDelegate{}
+	conn := NewConn("127.0.0.1:4150", config, testDelegate)
+	conn.consumePart = "0"
+
+	cleanupConnection := func() {
+		conn.CloseAll()
+	}
+	_, err := conn.Connect()
+	if err != nil {
+		cleanupConnection()
+	}
+	time.Sleep(time.Second)
+	if atomic.LoadInt32(&testDelegate.OnClosed) != 1 {
+		t.Errorf("should trigger onclosed after cleanup")
 	}
 }
