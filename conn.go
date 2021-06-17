@@ -775,6 +775,15 @@ func getClusterID(m *Message) string {
 	return clusterID
 }
 
+func (c *Conn) MessageFinish(cmd *Command) {
+	select {
+	case c.msgResponseChan <- &msgResponse{cmd: cmd, success: true}:
+	case <-c.exitChan:
+		atomic.AddInt64(&c.messagesInFlight, -1)
+		c.log(LogLevelInfo, "finish command  %v ignored while exit", cmd)
+	}
+}
+
 func (c *Conn) onMessageFinish(m *Message) {
 	var cmd *Command
 	clusterID := getClusterID(m)
@@ -788,6 +797,15 @@ func (c *Conn) onMessageFinish(m *Message) {
 	case <-c.exitChan:
 		atomic.AddInt64(&c.messagesInFlight, -1)
 		c.log(LogLevelInfo, "finish %v ignored while exit", m)
+	}
+}
+
+func (c *Conn) MessageRequeue(cmd *Command) {
+	select {
+	case c.msgResponseChan <- &msgResponse{cmd: cmd, success: false, backoff: true, connOnly: true}:
+	case <-c.exitChan:
+		atomic.AddInt64(&c.messagesInFlight, -1)
+		c.log(LogLevelInfo, "req command %v ignored while exit", cmd)
 	}
 }
 
@@ -813,6 +831,13 @@ func (c *Conn) onMessageRequeue(m *Message, delay time.Duration, backoff bool, c
 	case <-c.exitChan:
 		atomic.AddInt64(&c.messagesInFlight, -1)
 		c.log(LogLevelInfo, "req %v ignored while exit", m)
+	}
+}
+
+func (c *Conn) MessageTouch(cmd *Command) {
+	select {
+	case c.cmdChan <- cmd:
+	case <-c.exitChan:
 	}
 }
 
