@@ -600,15 +600,15 @@ func (c *Conn) readLoop() {
 exit:
 	atomic.StoreInt32(&c.readLoopRunning, 0)
 	// start the connection close
-	messagesInFlight := atomic.LoadInt64(&c.messagesInFlight)
-	if messagesInFlight == 0 {
-		// if we exited readLoop with no messages in flight
-		// we need to explicitly trigger the close because
-		// writeLoop won't
-		c.close()
-	} else {
-		c.log(LogLevelWarning, "delaying close, %d outstanding messages", messagesInFlight)
-	}
+	c.close()
+	//if messagesInFlight == 0 {
+	//	// if we exited readLoop with no messages in flight
+	//	// we need to explicitly trigger the close because
+	//	// writeLoop won't
+	//	c.close()
+	//} else {
+	//	c.log(LogLevelWarning, "delaying close, %d outstanding messages", messagesInFlight)
+	//}
 	c.wg.Done()
 	c.log(LogLevelInfo, "readLoop exiting")
 }
