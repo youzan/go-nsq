@@ -501,7 +501,7 @@ func (w *Producer) onConnClose(c *Conn) {
 	close(w.closeChan)
 }
 
-// the strategy how the message publish on different partitions
+// the strategy how the message publish on disefferent partitions
 type PubStrategyType int
 
 const (

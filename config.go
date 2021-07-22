@@ -209,6 +209,7 @@ type Config struct {
 	//by producer with go-nsq's ClientCompressDecodec. This config applies to situation when consumer do NOT worry about
 	//message content, like receiving compressed message from one topic and delivery to another.
 	DisableMessageDecompress bool `opt:"disable_message_decompress"`
+	EnableConsumerLookupCache bool `opt:"enable_consumer_lookup_cache"`
 }
 
 // NewConfig returns a new default nsq configuration.

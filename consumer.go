@@ -554,8 +554,14 @@ func (r *Consumer) queryLookupd() {
 	addr, endpoint, discoveryUrl := r.nextLookupdEndpoint()
 	// discovery other lookupd nodes from current lookupd or from etcd
 	r.log(LogLevelDebug, "discovery nsqlookupd %s", discoveryUrl)
-	var lookupdList lookupListResp
-	err := apiRequestNegotiateV1("GET", discoveryUrl, nil, &lookupdList)
+	var lookupdList *lookupListResp
+	var cachev interface{}
+	var err error
+	if r.config.EnableConsumerLookupCache {
+		cachev, err = ListLookup(discoveryUrl)
+	} else {
+		err = apiRequestNegotiateV1("GET", discoveryUrl, nil, lookupdList)
+	}
 	if err != nil {
 		r.log(LogLevelError, "error discovery nsqlookupd (%s) - %s", discoveryUrl, err)
 		if strings.Contains(strings.ToLower(err.Error()), "connection refused") &&
@@ -583,6 +589,9 @@ func (r *Consumer) queryLookupd() {
 			return
 		}
 	} else {
+		if r.config.EnableConsumerLookupCache {
+			lookupdList = cachev.(*lookupListResp)
+		}
 		for _, node := range lookupdList.LookupdNodes {
 			addr := net.JoinHostPort(node.NodeIp, node.HttpPort)
 			r.ConnectToNSQLookupd(addr)
@@ -590,12 +599,20 @@ func (r *Consumer) queryLookupd() {
 	}
 
 	r.log(LogLevelDebug, "querying nsqlookupd %s", endpoint)
-	var data lookupResp
-	err = apiRequestNegotiateV1("GET", endpoint, nil, &data)
-	if err != nil {
-		r.log(LogLevelError, "error querying nsqlookupd (%s) - %s", endpoint, err)
-		return
+	var data *lookupResp
+	if r.config.EnableConsumerLookupCache {
+		cachev, err = Lookup(addr, r.topic, ACC_R, true)
+	} else {
+		err = apiRequestNegotiateV1("GET", endpoint, nil, data)
 	}
+
+	if err != nil {
+		r.log(LogLevelError, "error querying nsqlookupd cache (%s) - %s", endpoint, err)
+		return
+	} else if r.config.EnableConsumerLookupCache {
+		data = cachev.(*lookupResp)
+	}
+
 	if data.Meta.ExtendSupport && !r.IsConsumeExt() {
 		r.SetConsumeExt(true)
 	}
