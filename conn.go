@@ -110,9 +110,9 @@ func NewConn(addr string, config *Config, delegate ConnDelegate) *Conn {
 		cmdChan:         make(chan *Command),
 		msgResponseChan: make(chan *msgResponse),
 		exitChan:        make(chan int),
-		drainReady:      make(chan int),
+		drainReady:      nil,
 	}
-	close(c.drainReady)
+	//close(c.drainReady)
 	return c
 }
 
