@@ -498,7 +498,10 @@ func (w *Producer) onConnIOError(c *Conn, err error) { w.close(true) }
 func (w *Producer) onConnClose(c *Conn) {
 	w.guard.Lock()
 	defer w.guard.Unlock()
-	close(w.closeChan)
+	if w.closeChan != nil {
+		close(w.closeChan)
+		w.closeChan = nil
+	}
 }
 
 // the strategy how the message publish on different partitions

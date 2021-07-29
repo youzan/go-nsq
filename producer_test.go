@@ -1848,3 +1848,50 @@ func BenchmarkProducer(b *testing.B) {
 	close(startCh)
 	wg.Wait()
 }
+
+type testProducerConnDelegate struct {
+	closeChan chan struct{}
+	OnClosed  int32
+}
+
+func (d *testProducerConnDelegate) OnResponse(c *Conn, data []byte)       {}
+func (d *testProducerConnDelegate) OnError(c *Conn, data []byte)          {}
+func (d *testProducerConnDelegate) OnMessage(c *Conn, m *Message)         {}
+func (d *testProducerConnDelegate) OnMessageFinished(c *Conn, m *Message) {}
+func (d *testProducerConnDelegate) OnMessageRequeued(c *Conn, m *Message) {}
+func (d *testProducerConnDelegate) OnBackoff(c *Conn, connOnly bool)      {}
+func (d *testProducerConnDelegate) OnContinue(c *Conn)                    {}
+func (d *testProducerConnDelegate) OnResume(c *Conn)                      {}
+func (d *testProducerConnDelegate) OnIOError(c *Conn, err error)          {}
+func (d *testProducerConnDelegate) OnHeartbeat(c *Conn)                   {}
+func (d *testProducerConnDelegate) OnClose(c *Conn) {
+	if d.closeChan != nil {
+		close(d.closeChan)
+	} else {
+		d.OnClosed = 1
+	}
+}
+
+func TestConnConnectFailedShouldCleanConn1(t *testing.T) {
+	config := NewConfig()
+	laddr := "127.0.0.1"
+	// so that the test can simulate binding consumer to specified address
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+
+	topicName := "rdr_test_connfailed"
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	testDelegate := &testProducerConnDelegate{}
+	conn := NewConn("127.0.0.1:4444", config, testDelegate)
+
+	cleanupConnection := func() {
+		conn.CloseAll()
+	}
+	_, err := conn.Connect()
+	if err != nil {
+		cleanupConnection()
+	}
+	time.Sleep(2 * time.Second)
+	if atomic.LoadInt32(&testDelegate.OnClosed) != 1 {
+		t.Errorf("should trigger onclosed after cleanup")
+	}
+}
