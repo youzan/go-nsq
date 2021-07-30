@@ -263,7 +263,7 @@ func TestProducerReconnect(t *testing.T) {
 	<- d.done
 
 	//verify router alive
-	if w.closeChan == nil {
+	if w.producerRouter.closeChan == nil {
 		t.Fatalf("close chan should not closed")
 	}
 
@@ -603,33 +603,6 @@ func TestProducerPublishWithTimeout(t *testing.T) {
 	if err != context.DeadlineExceeded {
 		t.Fatalf("error %s", err)
 	}
-}
-
-func TestProducerPublishBasic(t *testing.T) {
-	topicName := "JavaTesting-Ext"
-	config := NewConfig()
-	config.ProducerPoolSize = 5
-	config.PubStrategy = int(PubRR)
-	w, err := NewTopicProducerMgr([]string{topicName}, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = w.ConnectToNSQLookupd("sqs-qa.s.qima-inc.com:4161")
-	if err != nil {
-		t.Error(err)
-	}
-	max := 100000000
-	ext := &MsgExt{
-		DispatchTag: "prj123",
-	}
-	for i := 0; i < max; i++ {
-		_, _, _, err = w.PublishWithJsonExt(topicName, []byte("this is test"), ext)
-		if err != nil {
-			fmt.Printf("%s", err.Error())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	time.Sleep(10 * time.Minute)
 }
 
 func TestProducerPublishToNotLeader(t *testing.T) {
@@ -2006,7 +1979,6 @@ func BenchmarkProducer(b *testing.B) {
 
 	p.conn = newMockProducerConn(&producerConnDelegate{p})
 	atomic.StoreInt32(&p.state, StateConnected)
-	p.closeChan = make(chan int)
 	go p.router()
 
 	startCh := make(chan struct{})
@@ -2044,7 +2016,9 @@ func TestConnConnectFailedShouldCleanConn1(t *testing.T) {
 	w.addr = "127.0.0.1:4144"
 	w.connect()
 	time.Sleep(time.Second)
-	if w.closeChan != nil {
-		t.Errorf("should make closeChan nil")
+	select {
+	case <- w.producerRouter.closeChan:
+	default:
+		t.Fatalf("router close chan is not closed")
 	}
 }

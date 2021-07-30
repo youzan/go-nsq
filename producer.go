@@ -59,6 +59,7 @@ type Producer struct {
 	addr   string
 	conn   producerConn
 	connDelegateFunc func(*Producer) ConnDelegate
+	producerRouter *producerRouter
 	config Config
 
 	logger   logger
@@ -67,7 +68,6 @@ type Producer struct {
 
 	responseChan chan []byte
 	errorChan    chan []byte
-	closeChan    chan int
 
 	transactionChan chan *ProducerTransaction
 	transactions    []*ProducerTransaction
@@ -375,10 +375,8 @@ func (w *Producer) connect() error {
 	}
 	atomic.StoreInt32(&w.state, StateConnected)
 	atomic.StoreInt32(&w.failedCnt, 0)
-	w.closeChan = make(chan int)
 	w.wg.Add(1)
 	go w.router()
-
 	return nil
 }
 
@@ -400,6 +398,31 @@ func (w *Producer) close(force bool) {
 }
 
 func (w *Producer) router() {
+	w.producerRouter = newRouter(w)
+	w.producerRouter.router()
+}
+
+type producerRouter struct {
+	stopper sync.Once
+	p *Producer
+	closeChan chan int
+}
+
+func newRouter(p *Producer) *producerRouter {
+	return &producerRouter {
+		p: p,
+		closeChan: make(chan int),
+	}
+}
+
+func (r *producerRouter) stop() {
+	r.stopper.Do(func(){
+		close(r.closeChan)
+	})
+}
+
+func (r *producerRouter) router() {
+	w := r.p
 	for {
 		select {
 		case t := <-w.transactionChan:
@@ -419,7 +442,7 @@ func (w *Producer) router() {
 			w.popTransaction(FrameTypeResponse, data)
 		case data := <-w.errorChan:
 			w.popTransaction(FrameTypeError, data)
-		case <-w.closeChan:
+		case <-r.closeChan:
 			goto exit
 		case <-w.exitChan:
 			goto exit
@@ -506,11 +529,10 @@ func (w *Producer) onConnIOError(c *Conn, err error) { w.close(true) }
 func (w *Producer) onConnClose(c *Conn) {
 	w.guard.Lock()
 	defer w.guard.Unlock()
-	if w.closeChan != nil {
+	if w.producerRouter != nil {
 		if pc, ok := w.conn.(*Conn); ok && pc == c {
 			//close close chan, only when producer's connection equals with passin *Conn
-			close(w.closeChan)
-			w.closeChan = nil
+			w.producerRouter.stop()
 		}
 	}
 }
