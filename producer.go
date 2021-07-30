@@ -58,6 +58,7 @@ type Producer struct {
 	id     int64
 	addr   string
 	conn   producerConn
+	connDelegateFunc func(*Producer) ConnDelegate
 	config Config
 
 	logger   logger
@@ -125,6 +126,9 @@ func NewProducer(addr string, config *Config) (*Producer, error) {
 		exitChan:        make(chan int),
 		responseChan:    make(chan []byte),
 		errorChan:       make(chan []byte),
+		connDelegateFunc: func(producer *Producer) ConnDelegate {
+			return &producerConnDelegate{producer}
+		},
 	}
 	return p, nil
 }
@@ -335,6 +339,10 @@ func (w *Producer) sendCommandAsyncWithContext(ctx context.Context, cmd *Command
 	return nil
 }
 
+func (w *Producer) setConnDelegateFunc(f func(*Producer) ConnDelegate) {
+	w.connDelegateFunc = f;
+}
+
 func (w *Producer) connect() error {
 	w.guard.Lock()
 	defer w.guard.Unlock()
@@ -355,7 +363,7 @@ func (w *Producer) connect() error {
 
 	logger, logLvl := w.getLogger()
 
-	w.conn = NewConn(w.addr, &w.config, &producerConnDelegate{w})
+	w.conn = NewConn(w.addr, &w.config, w.connDelegateFunc(w))
 	w.conn.SetLogger(logger, logLvl, fmt.Sprintf("%3d (%%s)", w.id))
 
 	_, err := w.conn.Connect()
@@ -499,8 +507,11 @@ func (w *Producer) onConnClose(c *Conn) {
 	w.guard.Lock()
 	defer w.guard.Unlock()
 	if w.closeChan != nil {
-		close(w.closeChan)
-		w.closeChan = nil
+		if pc, ok := w.conn.(*Conn); ok && pc == c {
+			//close close chan, only when producer's connection equals with passin *Conn
+			close(w.closeChan)
+			w.closeChan = nil
+		}
 	}
 }
 
