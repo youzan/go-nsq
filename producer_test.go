@@ -263,7 +263,7 @@ func TestProducerReconnect(t *testing.T) {
 	<- d.done
 
 	//verify router alive
-	if w.producerRouter.closeChan == nil {
+	if w.closeChan == nil {
 		t.Fatalf("close chan should not closed")
 	}
 
@@ -1979,7 +1979,8 @@ func BenchmarkProducer(b *testing.B) {
 
 	p.conn = newMockProducerConn(&producerConnDelegate{p})
 	atomic.StoreInt32(&p.state, StateConnected)
-	go p.router()
+	p.closeChan = make(chan int)
+	go p.router(p.closeChan)
 
 	startCh := make(chan struct{})
 	var wg sync.WaitGroup
@@ -2017,8 +2018,8 @@ func TestConnConnectFailedShouldCleanConn1(t *testing.T) {
 	w.connect()
 	time.Sleep(time.Second)
 	select {
-	case <- w.producerRouter.closeChan:
+	case <- w.closeChan:
+		t.Fatalf("router close chan is not Nil(after closed)")
 	default:
-		t.Fatalf("router close chan is not closed")
 	}
 }
