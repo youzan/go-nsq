@@ -366,6 +366,7 @@ func (w *Producer) connect() error {
 	w.conn = NewConn(w.addr, &w.config, w.connDelegateFunc(w))
 	w.conn.SetLogger(logger, logLvl, fmt.Sprintf("%3d (%%s)", w.id))
 
+	atomic.StoreInt32(&w.state, StateConnecting)
 	_, err := w.conn.Connect()
 	if err != nil {
 		w.conn.CloseAll()
@@ -505,13 +506,13 @@ func (w *Producer) onConnIOError(c *Conn, err error) { w.close(true) }
 func (w *Producer) onConnClose(c *Conn) {
 	w.guard.Lock()
 	defer w.guard.Unlock()
-	if w.closeChan != nil {
-		if pc, ok := w.conn.(*Conn); ok && pc == c {
-			//close close chan, only when producer's connection equals with passin *Conn
-			close(w.closeChan)
-			//guard from close closed ch by setting nil
-			w.closeChan = nil
-		}
+	if atomic.LoadInt32(&w.state) == StateConnecting {
+		atomic.StoreInt32(&w.state, StateInit)
+	} else if w.closeChan != nil {
+		//close close chan, only when producer's connection equals with passin *Conn
+		close(w.closeChan)
+		//guard from close closed ch by setting nil
+		w.closeChan = nil
 	}
 }
 

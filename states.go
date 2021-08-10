@@ -3,6 +3,7 @@ package nsq
 // states
 const (
 	StateInit = iota
+	StateConnecting
 	StateDisconnected
 	StateConnected
 	StateSubscribed
