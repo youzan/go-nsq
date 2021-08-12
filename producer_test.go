@@ -253,11 +253,16 @@ func TestProducerReconnect(t *testing.T) {
 		t.Fatalf("should failed")
 	}
 
+	w.addr = "127.0.0.1:4150"
+	err = w.Publish("reconnect_test", []byte("test"))
+	if err == nil {
+		t.Fatalf("should failed as producer's connection state not reset and fail to connect, Err %v", err)
+	}
+
 	close(d.w)
 	<- d.done
 
-	//fix addr
-	w.addr = "127.0.0.1:4150"
+	//should succeed
 	err = w.Publish("reconnect_test", []byte("test"))
 	if err != nil {
 		t.Fatalf("should not failed, Err %v", err)
