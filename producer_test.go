@@ -120,6 +120,165 @@ func ensureInitChannel(t *testing.T, topicName string, useLookup bool) {
 	q.Stop()
 }
 
+type testProducerDelegate struct {
+	shouldWait bool
+	w chan int
+	done chan int
+	n ConnDelegate
+}
+
+// OnResponse is called when the connection
+// receives a FrameTypeResponse from nsqd
+func (p *testProducerDelegate) OnResponse(c *Conn, data []byte) {
+	p.n.OnResponse(c, data)
+}
+
+// OnError is called when the connection
+// receives a FrameTypeError from nsqd
+func (p *testProducerDelegate) OnError(c *Conn, data []byte) {
+	p.n.OnError(c, data)
+}
+
+// OnMessage is called when the connection
+// receives a FrameTypeMessage from nsqd
+func (p *testProducerDelegate) OnMessage(c *Conn, m *Message) {
+	p.n.OnMessage(c, m)
+}
+
+// OnMessageFinished is called when the connection
+// handles a FIN command from a message handler
+func (p *testProducerDelegate) OnMessageFinished(c *Conn, m *Message) {
+	p.n.OnMessageFinished(c, m)
+}
+
+// OnMessageRequeued is called when the connection
+// handles a REQ command from a message handler
+func (p *testProducerDelegate) OnMessageRequeued(c *Conn, m *Message) {
+	p.n.OnMessageRequeued(c, m)
+}
+
+// OnBackoff is called when the connection triggers a backoff state
+// bool indicated whether it is only related to current connection
+func (p *testProducerDelegate) OnBackoff(c *Conn, f bool) {
+	p.n.OnBackoff(c, f)
+}
+
+// OnContinue is called when the connection finishes a message without adjusting backoff state
+func (p *testProducerDelegate) OnContinue(c *Conn) {
+	p.n.OnContinue(c)
+}
+
+// OnResume is called when the connection triggers a resume state
+func (p *testProducerDelegate) OnResume(c *Conn) {
+	p.n.OnResume(c)
+}
+
+// OnIOError is called when the connection experiences
+// a low-level TCP transport error
+func (p *testProducerDelegate) OnIOError(c *Conn, err error) {
+	p.n.OnIOError(c, err)
+}
+
+// OnHeartbeat is called when the connection
+// receives a heartbeat from nsqd
+func (p *testProducerDelegate) OnHeartbeat(c *Conn) {
+	p.n.OnHeartbeat(c)
+}
+
+// OnClose is called when the connection
+// closes, after all cleanup
+func (p *testProducerDelegate) OnClose(c *Conn) {
+	if p.shouldWait {
+		<- p.w
+	}
+	p.n.OnClose(c)
+	if p.shouldWait {
+		close(p.done)
+	}
+}
+
+func TestProducerReconnect(t *testing.T) {
+	config := NewConfig()
+	laddr := "127.0.0.1"
+
+	config.LocalAddr, _ = net.ResolveTCPAddr("tcp", laddr+":0")
+
+	EnsureTopic(t, 4150, "reconnect_test", 0)
+	ensureInitChannel(t, "reconnect_test", false)
+	w, _ := NewProducer("127.0.0.1:4150", config)
+	w.SetLogger(nullLogger, LogLevelInfo)
+
+	//try publish to kick off producer
+	err := w.Publish("reconnect_test", []byte("test"))
+	if err != nil {
+		t.Fatalf("should lazily connect - %s", err)
+	}
+
+	d := &testProducerDelegate {
+		shouldWait: false,
+		w: make(chan int, 1),
+		done: make(chan int),
+	}
+
+	conn, _ := w.conn.(*Conn)
+	testProducerDelegateFunc := func(p *Producer) ConnDelegate {
+		d.n = conn.delegate
+		return d
+	}
+
+	//to simulate err on ReadUnpackedResponse by close read
+	w.conn.CloseRead()
+	conn.delegate.OnIOError(conn, errors.New("faked IOError"))
+
+	max := 30
+	//assert conn state is init
+	for {
+		if w.state != StateInit {
+			max--
+			if max > 0 {
+				time.Sleep(1 * time.Second)
+			} else {
+				t.Fatalf("producer state unexperted %v", w.state)
+			}
+		} else {
+			break
+		}
+	}
+
+	w.addr = "127.0.0.1:5150"
+	w.setConnDelegateFunc(testProducerDelegateFunc)
+	d.shouldWait = true
+	err = w.Publish("reconnect_test", []byte("test"))
+	if err == nil {
+		t.Fatalf("should failed")
+	}
+
+	w.addr = "127.0.0.1:4150"
+	err = w.Publish("reconnect_test", []byte("test"))
+	if err == nil {
+		t.Fatalf("should failed as producer's connection state not reset and fail to connect, Err %v", err)
+	}
+
+	close(d.w)
+	<- d.done
+
+	//should succeed
+	err = w.Publish("reconnect_test", []byte("test"))
+	if err != nil {
+		t.Fatalf("should not failed, Err %v", err)
+	}
+
+	//verify router alive
+	if w.closeChan == nil {
+		t.Fatalf("close chan should not closed")
+	}
+
+	err = w.Publish("reconnect_test", []byte("test"))
+	if err != nil {
+		t.Fatalf("should not failed, Err %v", err)
+	}
+}
+
 func TestProducerConnection(t *testing.T) {
 	config := NewConfig()
 	laddr := "127.0.0.1"
@@ -1827,7 +1986,7 @@ func BenchmarkProducer(b *testing.B) {
 	p.conn = newMockProducerConn(&producerConnDelegate{p})
 	atomic.StoreInt32(&p.state, StateConnected)
 	p.closeChan = make(chan int)
-	go p.router()
+	go p.router(p.closeChan)
 
 	startCh := make(chan struct{})
 	var wg sync.WaitGroup
@@ -1847,4 +2006,26 @@ func BenchmarkProducer(b *testing.B) {
 	b.StartTimer()
 	close(startCh)
 	wg.Wait()
+}
+
+func TestConnConnectFailedShouldCleanConn1(t *testing.T) {
+	config := NewConfig()
+
+	topicName := "rdr_test_connfailed"
+	topicName = topicName + strconv.Itoa(int(time.Now().Unix()))
+	w, _ := NewProducer("127.0.0.1:4150", config)
+	w.connect()
+	w.onConnIOError(w.conn.(*Conn), errors.New("read error"))
+	w.conn.(*Conn).close()
+
+	time.Sleep(time.Second)
+
+	w.addr = "127.0.0.1:4144"
+	w.connect()
+	time.Sleep(time.Second)
+	select {
+	case <- w.closeChan:
+		t.Fatalf("router close chan is not Nil(after closed)")
+	default:
+	}
 }

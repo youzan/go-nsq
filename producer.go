@@ -58,6 +58,7 @@ type Producer struct {
 	id     int64
 	addr   string
 	conn   producerConn
+	connDelegateFunc func(*Producer) ConnDelegate
 	config Config
 
 	logger   logger
@@ -125,6 +126,9 @@ func NewProducer(addr string, config *Config) (*Producer, error) {
 		exitChan:        make(chan int),
 		responseChan:    make(chan []byte),
 		errorChan:       make(chan []byte),
+		connDelegateFunc: func(producer *Producer) ConnDelegate {
+			return &producerConnDelegate{producer}
+		},
 	}
 	return p, nil
 }
@@ -335,6 +339,10 @@ func (w *Producer) sendCommandAsyncWithContext(ctx context.Context, cmd *Command
 	return nil
 }
 
+func (w *Producer) setConnDelegateFunc(f func(*Producer) ConnDelegate) {
+	w.connDelegateFunc = f;
+}
+
 func (w *Producer) connect() error {
 	w.guard.Lock()
 	defer w.guard.Unlock()
@@ -355,9 +363,10 @@ func (w *Producer) connect() error {
 
 	logger, logLvl := w.getLogger()
 
-	w.conn = NewConn(w.addr, &w.config, &producerConnDelegate{w})
+	w.conn = NewConn(w.addr, &w.config, w.connDelegateFunc(w))
 	w.conn.SetLogger(logger, logLvl, fmt.Sprintf("%3d (%%s)", w.id))
 
+	atomic.StoreInt32(&w.state, StateConnecting)
 	_, err := w.conn.Connect()
 	if err != nil {
 		w.conn.CloseAll()
@@ -369,8 +378,7 @@ func (w *Producer) connect() error {
 	atomic.StoreInt32(&w.failedCnt, 0)
 	w.closeChan = make(chan int)
 	w.wg.Add(1)
-	go w.router()
-
+	go w.router(w.closeChan)
 	return nil
 }
 
@@ -391,7 +399,7 @@ func (w *Producer) close(force bool) {
 	}()
 }
 
-func (w *Producer) router() {
+func (w *Producer) router(closeChan <-chan int) {
 	for {
 		select {
 		case t := <-w.transactionChan:
@@ -411,7 +419,7 @@ func (w *Producer) router() {
 			w.popTransaction(FrameTypeResponse, data)
 		case data := <-w.errorChan:
 			w.popTransaction(FrameTypeError, data)
-		case <-w.closeChan:
+		case <- closeChan:
 			goto exit
 		case <-w.exitChan:
 			goto exit
@@ -498,7 +506,14 @@ func (w *Producer) onConnIOError(c *Conn, err error) { w.close(true) }
 func (w *Producer) onConnClose(c *Conn) {
 	w.guard.Lock()
 	defer w.guard.Unlock()
-	close(w.closeChan)
+	if atomic.LoadInt32(&w.state) == StateConnecting {
+		atomic.StoreInt32(&w.state, StateInit)
+	} else if w.closeChan != nil {
+		//close close chan, only when producer's connection equals with passin *Conn
+		close(w.closeChan)
+		//guard from close closed ch by setting nil
+		w.closeChan = nil
+	}
 }
 
 // the strategy how the message publish on different partitions
