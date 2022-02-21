@@ -1205,6 +1205,42 @@ func TestConsumerConnectFailedShouldCleanConn(t *testing.T) {
 	time.Sleep(time.Second * 2)
 }
 
+func TestConsumerBackoffWhileChangeMaxInflight(t *testing.T) {
+	topicName := "nsq_test"
+	config := NewConfig()
+
+	config.MaxInFlight = 80
+
+	q, _ := NewConsumer(topicName, "ch", config)
+	q.AddHandler(&testHandler{})
+	EnsureTopic(t, 4150, topicName, 0)
+	err := q.ConnectToNSQLookupd("127.0.0.1:4161")
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	time.Sleep(5 * time.Second)
+	conns := q.conns()
+	if len(conns) == 0 {
+		t.Fatalf("fail to get consumer conns")
+	}
+
+	try := 3
+	for try > 0 {
+		q.onConnBackoff(conns[0], true)
+		// change to low max inflight
+		time.Sleep(time.Minute/4)
+		q.ChangeMaxInFlight(20)
+		time.Sleep(time.Second * 5)
+		for _, con := range q.conns() {
+			rdy := con.RDY()
+			if rdy <= 0 {
+				t.Fatalf("rdy should not be zero %v", rdy)
+			}
+		}
+		try--
+	}
+}
+
 type testConnDelegate struct {
 	OnClosed int32
 }

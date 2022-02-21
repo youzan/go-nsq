@@ -156,6 +156,54 @@ type Consumer struct {
 	// the offset will be set only once at the first sub to nsqd
 	offsetMutex   sync.Mutex
 	consumeOffset map[int]ConsumeOffset
+
+	rdyUpdateEventCh chan *rdyUpdateEvent
+	maxInflightCh chan *maxInflightUpdateEvent
+	rdyRecalculateEventCh chan *rdyUpdateEvent
+	backoffResumeEventCh chan *backoffResumeEvent
+}
+
+type rdyUpdateEvent struct {
+	c *Conn
+	rdy int64
+	done chan bool
+	err error
+}
+
+func newRdyUpdateEvent(conn *Conn, rdy int64) *rdyUpdateEvent {
+	return &rdyUpdateEvent {
+		c: conn,
+		rdy: rdy,
+		done: make(chan bool),
+	}
+}
+
+type maxInflightUpdateEvent struct {
+	maxInflight int64
+	done chan bool
+}
+
+func newMaxInflightUpdateEvent(maxInflight int64) *maxInflightUpdateEvent {
+	return &maxInflightUpdateEvent {
+		maxInflight: maxInflight,
+		done: make(chan bool),
+	}
+}
+
+type backoffResumeEvent struct {
+	signal backoffSignal
+	conn *Conn
+	connOnly bool
+	done chan bool
+}
+
+func newBackoffResumeEvent(signal backoffSignal, conn *Conn, connOnly bool) *backoffResumeEvent {
+	return &backoffResumeEvent{
+		signal: signal,
+		conn: conn,
+		connOnly: connOnly,
+		done: make(chan bool),
+	}
 }
 
 // NewConsumer creates a new instance of Consumer for the specified topic/channel
@@ -210,7 +258,15 @@ func NewPartitionConsumer(topic string, part int, channel string, config *Config
 		StopChan:      make(chan int),
 		exitChan:      make(chan int),
 		consumeOffset: make(map[int]ConsumeOffset),
+
+		maxInflightCh: make(chan *maxInflightUpdateEvent, 1),
+		rdyUpdateEventCh: make(chan *rdyUpdateEvent, 1),
+		rdyRecalculateEventCh: make(chan *rdyUpdateEvent, 1),
+		backoffResumeEventCh: make(chan *backoffResumeEvent, 1),
 	}
+	r.wg.Add(1)
+	//rdy update event responder
+	go r.rdyUpdateLoop()
 	r.wg.Add(1)
 	go r.rdyLoop()
 	return r, nil
@@ -334,14 +390,16 @@ func (r *Consumer) getMaxInFlight() int32 {
 //
 // If already connected, it updates the reader RDY state for each connection.
 func (r *Consumer) ChangeMaxInFlight(maxInFlight int) {
-	if r.getMaxInFlight() == int32(maxInFlight) {
+
+	if atomic.LoadInt32(&r.stopFlag) == 1 {
 		return
 	}
 
-	atomic.StoreInt32(&r.maxInFlight, int32(maxInFlight))
-
-	for _, c := range r.conns() {
-		r.maybeUpdateRDY(c)
+	req := newMaxInflightUpdateEvent(int64(maxInFlight))
+	select {
+	case r.maxInflightCh <- req:
+		<-req.done
+	case <- r.exitChan:
 	}
 }
 
@@ -739,10 +797,11 @@ func (r *Consumer) ConnectToNSQD(addr string, part int) error {
 	}
 
 	if resp != nil {
-		if resp.MaxRdyCount < int64(r.getMaxInFlight()) {
+		maxInflightSnapshot := int64(r.getMaxInFlight())
+		if resp.MaxRdyCount < maxInflightSnapshot {
 			r.log(LogLevelWarning,
 				"(%s) max RDY count %d < consumer max in flight %d, truncation possible",
-				conn.String(), resp.MaxRdyCount, r.getMaxInFlight())
+				conn.String(), resp.MaxRdyCount, maxInflightSnapshot)
 		}
 	}
 
@@ -911,15 +970,30 @@ func (r *Consumer) onConnMessageRequeued(c *Conn, msg *Message) {
 }
 
 func (r *Consumer) onConnBackoff(c *Conn, connOnly bool) {
-	r.startStopContinueBackoff(c, backoffFlag, connOnly)
+	req := newBackoffResumeEvent(backoffFlag, c, connOnly)
+	select {
+	case r.backoffResumeEventCh <- req:
+		<- req.done
+	case <- c.exitChan:
+	}
 }
 
 func (r *Consumer) onConnContinue(c *Conn) {
-	r.startStopContinueBackoff(c, continueFlag, false)
+	req := newBackoffResumeEvent(continueFlag, c, false)
+	select {
+	case r.backoffResumeEventCh <- req:
+		<- req.done
+	case <- c.exitChan:
+	}
 }
 
 func (r *Consumer) onConnResume(c *Conn) {
-	r.startStopContinueBackoff(c, resumeFlag, false)
+	req := newBackoffResumeEvent(resumeFlag, c, false)
+	select {
+	case r.backoffResumeEventCh <- req:
+		<- req.done
+	case <- c.exitChan:
+	}
 }
 
 func (r *Consumer) onConnResponse(c *Conn, data []byte) {
@@ -1046,7 +1120,7 @@ func (r *Consumer) onConnClose(c *Conn) {
 	}
 }
 
-func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, connOnly bool) {
+func (r *Consumer) 	startStopContinueBackoff(conn *Conn, signal backoffSignal, connOnly bool) {
 	// prevent many async failures/successes from immediately resulting in
 	// max backoff/normal rate (by ensuring that we dont continually incr/decr
 	// the counter during a backoff period)
@@ -1060,7 +1134,7 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 	if backoffFlag == signal && connOnly {
 		oldRdy := conn.RDY()
 		if oldRdy != 0 {
-			r.updateRDY(conn, 0)
+			r.updateConnRdy(conn, 0)
 		}
 		total := int64(0)
 		for _, c := range r.conns() {
@@ -1072,9 +1146,8 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 			}
 			// since the heartbeat is 30s, we should less than that
 			time.AfterFunc(time.Minute/4, func() {
-				count := r.perConnMaxInFlight()
-				r.updateRDY(conn, count)
-				r.log(LogLevelDebug, "conn %v exiting backoff, returning RDY to %d", conn.String(), count)
+				r.maybeUpdateRDY(conn)
+				r.log(LogLevelDebug, "conn %v exiting backoff, returning RDY to %d", conn.String(), conn.RDY())
 			})
 			return
 		}
@@ -1094,7 +1167,7 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 			count := r.perConnMaxInFlight()
 			last := conn.RDY()
 			if last != count {
-				r.updateRDY(conn, count)
+				r.updateConnRdy(conn, count)
 				r.log(LogLevelDebug, "conn %v exiting backoff, returning RDY from %d to %d", conn.String(), last, count)
 			}
 		}
@@ -1112,7 +1185,7 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 		count := r.perConnMaxInFlight()
 		r.log(LogLevelDebug, "exiting backoff, returning all to RDY %d", count)
 		for _, c := range r.conns() {
-			r.updateRDY(c, count)
+			r.updateConnRdy(c, count)
 		}
 	} else if r.backoffCounter > 0 {
 		// start or continue backoff
@@ -1127,7 +1200,7 @@ func (r *Consumer) startStopContinueBackoff(conn *Conn, signal backoffSignal, co
 
 		// send RDY 0 immediately (to *all* connections)
 		for _, c := range r.conns() {
-			r.updateRDY(c, 0)
+			r.updateConnRdy(c, 0)
 		}
 
 		r.backoff(backoffDuration)
@@ -1190,17 +1263,139 @@ func (r *Consumer) inBackoffTimeout() bool {
 }
 
 func (r *Consumer) maybeUpdateRDY(conn *Conn) {
-	inBackoff := r.inBackoff()
-	inBackoffTimeout := r.inBackoffTimeout()
-	if inBackoff || inBackoffTimeout {
-		r.log(LogLevelDebug, "(%s) skip sending RDY inBackoff:%v || inBackoffTimeout:%v",
-			conn, inBackoff, inBackoffTimeout)
+	if atomic.LoadInt32(&r.stopFlag) == 1 {
+		r.log(LogLevelInfo, "ignore update ready when exiting")
 		return
 	}
 
-	count := r.perConnMaxInFlight()
-	r.log(LogLevelDebug, "(%s) sending RDY %d ", conn, count)
-	r.updateRDY(conn, count)
+	req := newRdyUpdateEvent(conn, 0)
+	select {
+	case r.rdyRecalculateEventCh <- req:
+		<-req.done
+	case <- r.exitChan:
+		r.log(LogLevelInfo, "ignore update ready when exiting")
+	}
+}
+
+/**
+perform rdy update in rdy event update lookup
+ */
+func (r *Consumer) updateConnRdy(c *Conn, rdy int64) error {
+
+	if c.IsClosing() {
+		r.log(LogLevelInfo, "ignore update ready when exiting")
+		return ErrClosing
+	}
+
+	r.log(LogLevelDebug, "try update ready to: %v", rdy)
+	// never exceed the nsqd's configured max RDY count
+	if rdy > c.MaxRDY() {
+		rdy = c.MaxRDY()
+	}
+
+	// stop any pending retry of an old RDY update
+	r.rdyRetryMtx.Lock()
+	if timer, ok := r.rdyRetryTimers[c.GetConnUID()]; ok {
+		timer.Stop()
+		delete(r.rdyRetryTimers, c.GetConnUID())
+	}
+	r.rdyRetryMtx.Unlock()
+
+	r.rdyUpdateMtx.Lock()
+	// never exceed our global max in flight. truncate if possible.
+	// this could help a new connection get partial max-in-flight
+	rdyCount := c.RDY()
+	currentTotal := atomic.LoadInt64(&r.totalRdyCount)
+	maxPossibleRdy := int64(r.getMaxInFlight()) - currentTotal + rdyCount
+	if maxPossibleRdy > 0 && maxPossibleRdy < rdy {
+		rdy = maxPossibleRdy
+	}
+	r.log(LogLevelDebug, "try update ready from %v to: %v, current total: %v",
+		rdyCount, rdy, currentTotal)
+	if maxPossibleRdy <= 0 && rdy > 0 {
+		r.rdyUpdateMtx.Unlock()
+		if rdyCount == 0 {
+			// we wanted to exit a zero RDY count but we couldn't send it...
+			// in order to prevent eternal starvation we reschedule this attempt
+			// (if any other RDY update succeeds this timer will be stopped)
+			r.log(LogLevelInfo, "try update ready from %v to: %v later, total: %v", rdyCount, rdy, currentTotal)
+			r.rdyRetryMtx.Lock()
+			r.rdyRetryTimers[c.GetConnUID()] = time.AfterFunc(5*time.Second,
+				func() {
+					r.updateRDY(c, rdy)
+				})
+			r.rdyRetryMtx.Unlock()
+		}
+		r.log(LogLevelDebug, "try update ready from %v to: %v overflow inflight, total %v",
+			rdyCount, rdy, currentTotal)
+		return ErrOverMaxInFlight
+	}
+
+	defer r.rdyUpdateMtx.Unlock()
+	return r.sendRDY(c, rdy)
+}
+
+//rdy event update responder,
+func (r *Consumer) rdyUpdateLoop() {
+	for {
+		select {
+		case e := <- r.maxInflightCh:
+			maxInFlight := e.maxInflight
+			atomic.StoreInt32(&r.maxInFlight, int32(maxInFlight))
+
+			inBackoff := r.inBackoff()
+			inBackoffTimeout := r.inBackoffTimeout()
+			if inBackoff || inBackoffTimeout {
+				r.log(LogLevelDebug, "skip sending RDY inBackoff:%v || inBackoffTimeout:%v", inBackoff, inBackoffTimeout)
+				close(e.done)
+				continue
+			}
+
+			count := r.perConnMaxInFlight()
+			for _, c := range r.conns() {
+				r.log(LogLevelDebug, "(%s) sending RDY %d ", c, count)
+				r.updateConnRdy(c, count)
+			}
+			close(e.done)
+		//handle rdy event coming from Consumer.updateRdy()
+		case e := <- r.rdyUpdateEventCh:
+			conn := e.c
+			rdy := e.rdy
+			err := r.updateConnRdy(conn, rdy)
+			e.err = err
+			close(e.done)
+		//handle rdy recalculate for passin conn. equals to may update rdy
+		case e := <- r.rdyRecalculateEventCh:
+			conn := e.c
+			inBackoff := r.inBackoff()
+			inBackoffTimeout := r.inBackoffTimeout()
+			if inBackoff || inBackoffTimeout {
+				r.log(LogLevelDebug, "(%s) skip sending RDY inBackoff:%v || inBackoffTimeout:%v",
+					conn, inBackoff, inBackoffTimeout)
+				close(e.done)
+				continue
+			}
+
+			count := r.perConnMaxInFlight()
+			rdy := conn.RDY()
+			if rdy != count {
+				r.log(LogLevelDebug, "(%s) sending RDY %d ", conn, count)
+				r.updateConnRdy(conn, count)
+			}
+			close(e.done)
+		//handle consumer connection backoff resume
+		case e := <- r.backoffResumeEventCh:
+			r.startStopContinueBackoff(e.conn, e.signal, e.connOnly)
+			close(e.done)
+		//exit chan closed at very end
+		case <- r.exitChan:
+			goto exit
+		}
+	}
+
+exit:
+	r.log(LogLevelInfo, "rdyEventLoop exiting")
+	r.wg.Done()
 }
 
 func (r *Consumer) rdyLoop() {
@@ -1261,53 +1456,15 @@ func (r *Consumer) updateRDY(c *Conn, count int64) error {
 		r.log(LogLevelInfo, "ignore update ready when exiting")
 		return ErrClosing
 	}
-
-	r.log(LogLevelDebug, "try update ready to: %v", count)
-	// never exceed the nsqd's configured max RDY count
-	if count > c.MaxRDY() {
-		count = c.MaxRDY()
+	req := newRdyUpdateEvent(c, count)
+	select {
+	case r.rdyUpdateEventCh <- req:
+		<-req.done
+		return req.err
+	case <- r.exitChan:
+		r.log(LogLevelInfo, "ignore update ready when exiting")
+		return ErrClosing
 	}
-
-	// stop any pending retry of an old RDY update
-	r.rdyRetryMtx.Lock()
-	if timer, ok := r.rdyRetryTimers[c.GetConnUID()]; ok {
-		timer.Stop()
-		delete(r.rdyRetryTimers, c.GetConnUID())
-	}
-	r.rdyRetryMtx.Unlock()
-
-	r.rdyUpdateMtx.Lock()
-	// never exceed our global max in flight. truncate if possible.
-	// this could help a new connection get partial max-in-flight
-	rdyCount := c.RDY()
-	currentTotal := atomic.LoadInt64(&r.totalRdyCount)
-	maxPossibleRdy := int64(r.getMaxInFlight()) - currentTotal + rdyCount
-	if maxPossibleRdy > 0 && maxPossibleRdy < count {
-		count = maxPossibleRdy
-	}
-	r.log(LogLevelDebug, "try update ready from %v to: %v, current total: %v",
-		rdyCount, count, currentTotal)
-	if maxPossibleRdy <= 0 && count > 0 {
-		r.rdyUpdateMtx.Unlock()
-		if rdyCount == 0 {
-			// we wanted to exit a zero RDY count but we couldn't send it...
-			// in order to prevent eternal starvation we reschedule this attempt
-			// (if any other RDY update succeeds this timer will be stopped)
-			r.log(LogLevelInfo, "try update ready from %v to: %v later, total: %v", rdyCount, count, currentTotal)
-			r.rdyRetryMtx.Lock()
-			r.rdyRetryTimers[c.GetConnUID()] = time.AfterFunc(5*time.Second,
-				func() {
-					r.updateRDY(c, count)
-				})
-			r.rdyRetryMtx.Unlock()
-		}
-		r.log(LogLevelDebug, "try update ready from %v to: %v overflow inflight, total %v",
-			rdyCount, count, currentTotal)
-		return ErrOverMaxInFlight
-	}
-
-	defer r.rdyUpdateMtx.Unlock()
-	return r.sendRDY(c, count)
 }
 
 func (r *Consumer) sendRDY(c *Conn, count int64) error {
@@ -1340,10 +1497,10 @@ func (r *Consumer) redistributeRDY() {
 		return
 	}
 
-	maxInFlight := r.getMaxInFlight()
-	if len(conns) > int(maxInFlight) {
+	maxInFlightSnapshot := r.getMaxInFlight()
+	if len(conns) > int(maxInFlightSnapshot) {
 		r.log(LogLevelDebug, "redistributing RDY state (%d conns > %d max_in_flight)",
-			len(conns), maxInFlight)
+			len(conns), maxInFlightSnapshot)
 		atomic.StoreInt32(&r.needRDYRedistributed, 1)
 	}
 
@@ -1375,7 +1532,7 @@ func (r *Consumer) redistributeRDY() {
 		possibleConns = append(possibleConns, c)
 	}
 
-	availableMaxInFlight := int64(maxInFlight) - atomic.LoadInt64(&r.totalRdyCount)
+	availableMaxInFlight := int64(maxInFlightSnapshot) - atomic.LoadInt64(&r.totalRdyCount)
 	if r.inBackoff() {
 		availableMaxInFlight = 1 - atomic.LoadInt64(&r.totalRdyCount)
 	}
