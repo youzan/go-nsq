@@ -1895,6 +1895,29 @@ func (self *TopicProducerMgr) MultiPublishAndTrace(topic string, traceIDList []u
 	return id, offset, rawSize, err
 }
 
+func (self *TopicProducerMgr) PublishWithTimeout(topic string, body []byte, time time.Duration) error {
+	_, err := self.doCommandWithTimeoutAndRetry(topic, nil, time, 2, func(pid int) (*Command, error) {
+		if pid < 0 || pid == OLD_VERSION_PID {
+			// pub to old nsqd that not support partition
+			return Publish(topic, body), nil
+		}
+		return PublishWithPart(topic, strconv.Itoa(pid), body), nil
+	})
+	return err
+}
+
+func (self *TopicProducerMgr) PublishWithTimeoutAndPartition(topic string, partition int, body []byte, time time.Duration) error {
+	_, err := self.doCommandWithTimeoutAndRetryAndPartition(topic, partition, time, 2, func(pid int) (*Command, error) {
+		if pid < 0 || pid == OLD_VERSION_PID {
+			// pub to old nsqd that not support partition
+			return Publish(topic, body), nil
+		}
+		return PublishWithPart(topic, strconv.Itoa(pid), body), nil
+	})
+	return err
+}
+
+
 func (self *TopicProducerMgr) doCommandWithTimeoutAndRetryAndPartition(topic string, partition int, timeout time.Duration, maxRetry uint32,
 	commandFunc func(pid int) (*Command, error)) ([]byte, error) {
 	return self.doCommandWithTimeoutAndRetryTemplate(topic, timeout, maxRetry, commandFunc,
